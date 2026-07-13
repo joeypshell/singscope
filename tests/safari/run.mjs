@@ -115,9 +115,16 @@ try {
   const repetitionsInput = await driver.findElement(
     By.xpath("//span[normalize-space()='Repetitions']/following-sibling::input[@type='number']"),
   )
-  await repetitionsInput.clear()
-  await repetitionsInput.sendKeys('1', Key.TAB)
-  await driver.wait(async () => (await repetitionsInput.getAttribute('value')) === '1', 5_000)
+  await driver.executeScript((target) => {
+    const valueSetter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(target), 'value')?.set
+    valueSetter?.call(target, '1')
+    target.dispatchEvent(new Event('input', { bubbles: true }))
+    target.dispatchEvent(new Event('change', { bubbles: true }))
+  }, repetitionsInput)
+  await driver.wait(
+    async () => (await driver.executeScript((target) => target.value, repetitionsInput)) === '1',
+    5_000,
+  )
   console.log('Synthetic demo is configured for one take')
 
   const startButton = await driver.wait(
