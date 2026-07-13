@@ -50,12 +50,12 @@ try {
       continueButtons[0],
     )
     await continueButtons[0].click()
-    await driver.wait(
-      async () =>
-        (await driver.executeScript(() => localStorage.getItem('singscope:onboarding:v1'))) ===
-        'complete',
-      10_000,
-    )
+    const onboardingComplete = () =>
+      driver.executeScript(() => localStorage.getItem('singscope:onboarding:v1'))
+    if ((await onboardingComplete()) !== 'complete') {
+      await driver.executeScript((element) => element.click(), continueButtons[0])
+    }
+    await driver.wait(async () => (await onboardingComplete()) === 'complete', 10_000)
   }
 
   const demoButton = await driver.wait(
