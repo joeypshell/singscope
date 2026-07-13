@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { Browser, Builder, By, until } from 'selenium-webdriver'
+import { Browser, Builder, By, Key, until } from 'selenium-webdriver'
+import input from 'selenium-webdriver/lib/input.js'
 
 const url = process.env.SINGSCOPE_TEST_URL ?? 'http://127.0.0.1:4173'
 const capabilities = {
@@ -10,10 +11,36 @@ const capabilities = {
 }
 
 const driver = await new Builder().forBrowser(Browser.SAFARI).withCapabilities(capabilities).build()
+let touchSequence = 0
 
 async function nativeTap(element) {
   await driver.executeScript((target) => target.scrollIntoView({ block: 'center' }), element)
-  await driver.actions().click(element).perform()
+  const touch = new input.Pointer(`singscope-touch-${touchSequence++}`, input.Pointer.Type.TOUCH)
+  await driver
+    .actions({ async: true })
+    .insert(
+      touch,
+      touch.move({ origin: element, duration: 100, width: 8, height: 8 }),
+      touch.press(input.Button.LEFT, 8, 8, 0.5),
+      touch.release(input.Button.LEFT),
+    )
+    .perform()
+}
+
+async function trustedActivate(element, didActivate, label) {
+  await nativeTap(element)
+  try {
+    await driver.wait(didActivate, 3_000)
+    return
+  } catch {
+    console.warn(
+      `SafariDriver touch action did not activate ${label}; retrying with a trusted key action`,
+    )
+  }
+
+  await driver.executeScript((target) => target.focus(), element)
+  await driver.actions({ async: true }).sendKeys(Key.ENTER).perform()
+  await driver.wait(didActivate, 10_000)
 }
 
 try {
@@ -77,19 +104,19 @@ try {
     10_000,
   )
   await driver.sleep(750)
-  await nativeTap(startButton)
-  await driver.wait(
+  await trustedActivate(
+    startButton,
     async () => /Countdown|Recording/.test(await driver.findElement(By.css('body')).getText()),
-    10_000,
+    'Start',
   )
   await driver.sleep(3_500)
   assert.match(await driver.findElement(By.css('body')).getText(), /Recording/)
 
   const stopButton = await driver.findElement(By.xpath("//button[normalize-space()='Stop']"))
-  await nativeTap(stopButton)
-  await driver.wait(
+  await trustedActivate(
+    stopButton,
     async () => /Review/.test(await driver.findElement(By.css('body')).getText()),
-    20_000,
+    'Stop',
   )
   await driver.navigate().refresh()
   const reloadedCanvas = await driver.wait(until.elementLocated(By.css('canvas')), 10_000)
