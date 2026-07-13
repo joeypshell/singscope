@@ -35,20 +35,34 @@ async function nativeTap(element) {
   console.log(`Completed W3C touch action ${touchSequence}`)
 }
 
-async function trustedActivate(element, didActivate, label) {
+async function practicePhase() {
+  return driver.executeScript(() => {
+    const status =
+      document.querySelector('.ss-pitch-summary .ss-visually-hidden')?.textContent ?? ''
+    return /Practice state:\s*([a-z]+)\./.exec(status)?.[1] ?? null
+  })
+}
+
+async function waitForPracticePhase(expected, timeout = 10_000) {
+  await driver.wait(async () => expected.includes(await practicePhase()), timeout)
+}
+
+async function trustedStart(element) {
   await nativeTap(element)
   try {
-    await driver.wait(didActivate, 3_000)
+    await waitForPracticePhase(['countdown', 'recording'], 3_000)
     return
   } catch {
-    console.warn(
-      `SafariDriver touch action did not activate ${label}; retrying with a trusted key action`,
-    )
+    const phase = await practicePhase()
+    if (!['idle', 'ready', 'retry'].includes(phase)) {
+      throw new Error(`Start touch left practice in the unexpected “${phase ?? 'unknown'}” phase`)
+    }
+    console.warn('SafariDriver touch did not start audio; retrying Start with a trusted key action')
   }
 
   await driver.executeScript((target) => target.focus(), element)
   await driver.actions({ async: true }).sendKeys(Key.ENTER).perform()
-  await driver.wait(didActivate, 10_000)
+  await waitForPracticePhase(['countdown', 'recording'], 10_000)
 }
 
 try {
@@ -131,22 +145,38 @@ try {
     until.elementLocated(By.xpath("//button[normalize-space()='Start']")),
     10_000,
   )
-  await driver.sleep(750)
-  await trustedActivate(
-    startButton,
-    async () => /Countdown|Recording/.test(await driver.findElement(By.css('body')).getText()),
-    'Start',
-  )
-  await driver.sleep(3_500)
-  assert.match(await driver.findElement(By.css('body')).getText(), /Recording/)
+  await waitForPracticePhase(['ready'], 20_000)
+  await driver.wait(until.elementIsEnabled(startButton), 20_000)
+  await trustedStart(startButton)
+  await waitForPracticePhase(['recording'], 15_000)
+  await driver.sleep(1_500)
+  assert.equal(await practicePhase(), 'recording')
 
   const stopButton = await driver.findElement(By.xpath("//button[normalize-space()='Stop']"))
-  await trustedActivate(
-    stopButton,
-    async () => /Review/.test(await driver.findElement(By.css('body')).getText()),
-    'Stop',
+  await driver.wait(until.elementIsEnabled(stopButton), 5_000)
+  await nativeTap(stopButton)
+  await driver.wait(
+    async () =>
+      String(await driver.executeScript(() => window.location.hash)).startsWith('#/review/'),
+    20_000,
   )
+  const reviewLabel = await driver.wait(
+    until.elementLocated(By.css('.ss-review-heading .ss-eyebrow')),
+    10_000,
+  )
+  assert.equal(await reviewLabel.getText(), 'Review · Take 1')
+
   await driver.navigate().refresh()
+  await driver.wait(
+    async () =>
+      String(await driver.executeScript(() => window.location.hash)).startsWith('#/review/'),
+    10_000,
+  )
+  const reloadedReviewLabel = await driver.wait(
+    until.elementLocated(By.css('.ss-review-heading .ss-eyebrow')),
+    10_000,
+  )
+  assert.equal(await reloadedReviewLabel.getText(), 'Review · Take 1')
   const reloadedCanvas = await driver.wait(until.elementLocated(By.css('canvas')), 10_000)
   assert.equal(await reloadedCanvas.isDisplayed(), true)
   console.log('Recorded take reached Review and survived a Safari reload')
