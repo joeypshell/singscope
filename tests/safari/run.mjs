@@ -112,6 +112,14 @@ try {
   assert.equal(await canvas.isDisplayed(), true)
   console.log('Synthetic demo is open and its Canvas is visible')
 
+  const repetitionsInput = await driver.findElement(
+    By.xpath("//span[normalize-space()='Repetitions']/following-sibling::input[@type='number']"),
+  )
+  await repetitionsInput.clear()
+  await repetitionsInput.sendKeys('1', Key.TAB)
+  await driver.wait(async () => (await repetitionsInput.getAttribute('value')) === '1', 5_000)
+  console.log('Synthetic demo is configured for one take')
+
   const startButton = await driver.wait(
     until.elementLocated(By.xpath("//button[normalize-space()='Start']")),
     10_000,
