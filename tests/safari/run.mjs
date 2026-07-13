@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
-import { Builder, By, until } from 'selenium-webdriver'
+import { Browser, Builder, By, until } from 'selenium-webdriver'
 
 const url = process.env.SINGSCOPE_TEST_URL ?? 'http://127.0.0.1:4173'
 const capabilities = {
-  browserName: 'Safari',
+  browserName: Browser.SAFARI,
   platformName: 'iOS',
   'safari:useSimulator': true,
   'safari:deviceType': 'iPhone',
@@ -12,7 +12,7 @@ const capabilities = {
   ...(process.env.IOS_DEVICE_UDID ? { 'safari:deviceUDID': process.env.IOS_DEVICE_UDID } : {}),
 }
 
-const driver = await new Builder().withCapabilities(capabilities).build()
+const driver = await new Builder().forBrowser(Browser.SAFARI).withCapabilities(capabilities).build()
 try {
   await driver.get(url)
   await driver.wait(until.elementLocated(By.css('h1')), 20_000)

@@ -107,7 +107,12 @@ jobs:
           pnpm preview:pages --host 127.0.0.1 > /tmp/singscope-preview.log 2>&1 &
           PREVIEW_PID=$!
           trap 'kill $PREVIEW_PID || true; cat /tmp/singscope-preview.log' EXIT
-          for attempt in {1..30}; do curl -fsS "$SINGSCOPE_TEST_URL" >/dev/null && break; sleep 1; done
+          PREVIEW_READY=false
+          for attempt in {1..60}; do
+            if curl -fsS "$SINGSCOPE_TEST_URL" >/dev/null; then PREVIEW_READY=true; break; fi
+            sleep 1
+          done
+          test "$PREVIEW_READY" = true
           sudo safaridriver --enable
           pnpm test:safari
 
