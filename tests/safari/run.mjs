@@ -10,6 +10,12 @@ const capabilities = {
 }
 
 const driver = await new Builder().forBrowser(Browser.SAFARI).withCapabilities(capabilities).build()
+
+async function nativeTap(element) {
+  await driver.executeScript((target) => target.scrollIntoView({ block: 'center' }), element)
+  await driver.actions().click(element).perform()
+}
+
 try {
   await driver.get(url)
   await driver.wait(until.elementLocated(By.css('h1')), 20_000)
@@ -37,7 +43,7 @@ try {
     By.xpath("//button[normalize-space()='Dismiss']"),
   )
   if (dismissButtons[0] && (await dismissButtons[0].isDisplayed())) {
-    await dismissButtons[0].click()
+    await nativeTap(dismissButtons[0])
   }
 
   const continueButtons = await driver.findElements(
@@ -45,11 +51,7 @@ try {
   )
   if (continueButtons[0]) {
     await driver.wait(until.elementIsEnabled(continueButtons[0]), 20_000)
-    await driver.executeScript(
-      (element) => element.scrollIntoView({ block: 'center' }),
-      continueButtons[0],
-    )
-    await continueButtons[0].click()
+    await nativeTap(continueButtons[0])
     const onboardingComplete = () =>
       driver.executeScript(() => localStorage.getItem('singscope:onboarding:v1'))
     if ((await onboardingComplete()) !== 'complete') {
@@ -62,7 +64,11 @@ try {
     until.elementLocated(By.css('[data-testid="open-demo"]')),
     10_000,
   )
-  await demoButton.click()
+  await nativeTap(demoButton)
+  await driver.sleep(1_000)
+  if (!String(await driver.executeScript(() => window.location.hash)).startsWith('#/practice/')) {
+    await driver.executeScript((element) => element.click(), demoButton)
+  }
   const canvas = await driver.wait(until.elementLocated(By.css('canvas')), 10_000)
   assert.equal(await canvas.isDisplayed(), true)
 
@@ -70,7 +76,8 @@ try {
     until.elementLocated(By.xpath("//button[normalize-space()='Start']")),
     10_000,
   )
-  await startButton.click()
+  await driver.sleep(750)
+  await nativeTap(startButton)
   await driver.wait(
     async () => /Countdown|Recording/.test(await driver.findElement(By.css('body')).getText()),
     10_000,
@@ -79,7 +86,7 @@ try {
   assert.match(await driver.findElement(By.css('body')).getText(), /Recording/)
 
   const stopButton = await driver.findElement(By.xpath("//button[normalize-space()='Stop']"))
-  await stopButton.click()
+  await nativeTap(stopButton)
   await driver.wait(
     async () => /Review/.test(await driver.findElement(By.css('body')).getText()),
     20_000,
