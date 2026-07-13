@@ -10,4 +10,4 @@ Highest-value work after physical-iPhone acceptance:
 6. Add encrypted user-controlled backup destinations. No cloud/account dependency is planned without an explicit product decision.
 7. Evaluate a native iPhone wrapper only if PWA audio-route or storage constraints remain release blockers.
 
-Source separation, lyric transcription, social features, subscriptions, streaming integrations, opaque AI scores, and medical/vocal-health claims remain outside the MVP.
+Chord/polyphonic transcription, source separation, lyric transcription, social features, subscriptions, streaming integrations, opaque AI scores, and medical/vocal-health claims remain outside the MVP.

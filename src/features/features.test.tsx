@@ -1,7 +1,9 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { TargetNoteEditor } from '../components/TargetNoteEditor'
 import { ReviewScreen, type ReviewView } from './review/ReviewScreen'
+import { RecordedMelodyControl, type RecordedMelodyView } from './setup/RecordedMelodyControl'
 import { ProjectSetupScreen } from './setup/ProjectSetupScreen'
 import { DashboardScreen } from './dashboard/DashboardScreen'
 
@@ -75,6 +77,183 @@ describe('project setup', () => {
     expect(
       screen.getByRole('img', { name: 'Touch piano roll for target note timing' }),
     ).toBeInTheDocument()
+  })
+
+  it('offers local recorded-melody acquisition inside the analyzed-audio target mode', async () => {
+    const onStart = vi.fn()
+    const onUseAsReference = vi.fn()
+    render(
+      <ProjectSetupScreen
+        model={{
+          title: 'Piano melody',
+          referenceName: 'reference.m4a',
+          targetMode: 'isolated-vocal',
+          targetStatus: 'Ready to record locally.',
+          notes: [
+            { id: 'note-1', startSeconds: 0, endSeconds: 1, midiNote: 60 },
+            { id: 'note-2', startSeconds: 1, endSeconds: 2, midiNote: 64 },
+          ],
+          transpositionSemitones: 2,
+          alignmentSeconds: 0,
+          validationMessage: null,
+          canSave: true,
+          recordedMelody: {
+            phase: 'idle',
+            elapsedSeconds: 0,
+            captureSettings: null,
+            errorMessage: null,
+            hasRecordedSource: false,
+          },
+        }}
+        onBack={vi.fn()}
+        onTitleChange={vi.fn()}
+        onReferenceFile={vi.fn()}
+        onTargetModeChange={vi.fn()}
+        onMidiFile={vi.fn()}
+        onIsolatedVocalFile={vi.fn()}
+        onStartRecordedMelody={onStart}
+        onStopRecordedMelody={vi.fn()}
+        onRecordMelodyAgain={vi.fn()}
+        useRecordedSourceAsReference={false}
+        onUseRecordedSourceAsReferenceChange={onUseAsReference}
+        onTranspositionChange={vi.fn()}
+        onAlignmentChange={vi.fn()}
+        onNoteChange={vi.fn()}
+        onAddNote={vi.fn()}
+        onRemoveNote={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    )
+
+    const sources = screen.getByRole('group', { name: 'Target source' })
+    expect(within(sources).getByRole('button', { name: 'Audio / record' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    const recording = screen.getByRole('region', { name: 'Record a melody' })
+    expect(within(recording).getByText(/Nothing is uploaded/)).toBeInTheDocument()
+    await userEvent.click(within(recording).getByRole('button', { name: 'Start recording' }))
+    expect(onStart).toHaveBeenCalledOnce()
+    await userEvent.click(
+      within(recording).getByLabelText('Also use this melody audio as the backing audio'),
+    )
+    expect(onUseAsReference).toHaveBeenCalledWith(true)
+    expect(screen.getByLabelText('Piano note sequence')).toHaveTextContent('D4 · F♯4')
+    expect(screen.getByLabelText('Piano note 1')).toHaveTextContent('D4')
+    expect(screen.getByLabelText('Piano note 2')).toHaveTextContent('F♯4')
+  })
+
+  it('shows recording status, elapsed context time, applied settings, and stop', async () => {
+    const onStop = vi.fn()
+    render(
+      <RecordedMelodyControl
+        model={{
+          phase: 'recording',
+          elapsedSeconds: 12.4,
+          captureSettings: {
+            deviceId: 'built-in',
+            label: 'iPhone Microphone',
+            sampleRate: 48_000,
+            channelCount: 1,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: null,
+          },
+          errorMessage: null,
+          hasRecordedSource: false,
+        }}
+        onStart={vi.fn()}
+        onStop={onStop}
+        onRecordAgain={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('status')).toHaveTextContent('● Recording melody')
+    expect(screen.getByLabelText('Recording elapsed time')).toHaveTextContent('0:12.4')
+    const settings = screen.getByRole('region', { name: 'Settings actually applied' })
+    expect(settings).toHaveTextContent('iPhone Microphone')
+    expect(settings).toHaveTextContent('48000 Hz')
+    expect(settings).toHaveTextContent('Not reported')
+    await userEvent.click(screen.getByRole('button', { name: 'Stop and analyze' }))
+    expect(onStop).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['requesting', 'Waiting for microphone permission…'],
+    ['finalizing', 'Finishing local recording…'],
+    ['analyzing', 'Analyzing recording on this device…'],
+  ] as const)('announces the %s recorded-melody state', (phase, status) => {
+    const model: RecordedMelodyView = {
+      phase,
+      elapsedSeconds: 0,
+      captureSettings: null,
+      errorMessage: null,
+      hasRecordedSource: false,
+    }
+    render(
+      <RecordedMelodyControl
+        model={model}
+        onStart={vi.fn()}
+        onStop={vi.fn()}
+        onRecordAgain={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('status')).toHaveTextContent(status)
+  })
+
+  it('exposes retry for errors and completed recording drafts', async () => {
+    const onRecordAgain = vi.fn()
+    const { rerender } = render(
+      <RecordedMelodyControl
+        model={{
+          phase: 'error',
+          elapsedSeconds: 0,
+          captureSettings: null,
+          errorMessage: 'Microphone permission was denied.',
+          hasRecordedSource: false,
+        }}
+        onStart={vi.fn()}
+        onStop={vi.fn()}
+        onRecordAgain={onRecordAgain}
+      />,
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('Microphone permission was denied.')
+    await userEvent.click(screen.getByRole('button', { name: 'Record again' }))
+
+    rerender(
+      <RecordedMelodyControl
+        model={{
+          phase: 'idle',
+          elapsedSeconds: 5,
+          captureSettings: null,
+          errorMessage: null,
+          hasRecordedSource: true,
+        }}
+        onStart={vi.fn()}
+        onStop={vi.fn()}
+        onRecordAgain={onRecordAgain}
+      />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Record again' }))
+    expect(onRecordAgain).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows piano note names after transposition in the authoritative editor', () => {
+    render(
+      <TargetNoteEditor
+        notes={[
+          { id: 'note-1', startSeconds: 0, endSeconds: 1, midiNote: 60 },
+          { id: 'note-2', startSeconds: 1, endSeconds: 2, midiNote: 66 },
+        ]}
+        transpositionSemitones={-1}
+        onChange={vi.fn()}
+        onAdd={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    )
+    expect(screen.getByLabelText('Piano note sequence')).toHaveTextContent('B3 · F4')
+    expect(screen.getByLabelText('Piano note 1')).toHaveTextContent('B3')
+    expect(screen.getAllByLabelText('MIDI note')).toHaveLength(2)
   })
 })
 

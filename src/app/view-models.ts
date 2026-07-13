@@ -43,7 +43,7 @@ export function toTargetSet(project: AppProject): TargetSet {
     kind: project.targetMode === 'isolated-vocal' ? 'analyzed' : project.targetMode,
     status: 'active',
     createdAt: project.createdAt,
-    sourceAssetId: null,
+    sourceAssetId: project.targetSourceAssetId,
     parentTargetSetId: null,
     alignmentSeconds: project.alignmentSeconds,
     transposeSemitones: project.transpositionSemitones,

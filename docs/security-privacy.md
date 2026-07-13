@@ -2,14 +2,14 @@
 
 ## Promise and scope
 
-Microphone recordings, imported references, targets, pitch traces, metrics, backups, and prepared packages are processed locally. SingScope has no upload endpoint, analytics, telemetry, ad/tracking code, account, external AI, or CDN. Loading or updating the application still makes ordinary HTTPS requests to GitHub Pages, which GitHub may log.
+Microphone practice takes, directly recorded melody sources, imported references, targets, pitch traces, metrics, backups, and prepared packages are processed locally. SingScope has no upload endpoint, analytics, telemetry, ad/tracking code, account, external AI, or CDN. Loading or updating the application still makes ordinary HTTPS requests to GitHub Pages, which GitHub may log.
 
 ## Data flow and trust boundaries
 
 ```text
 [untrusted local files] ──validation/staging──┐
                                              v
-[microphone permission] ──MediaStream──> [browser sandbox]
+[microphone permission: take or target] ──MediaStream──> [browser sandbox]
                                              │
          [same-origin bundled workers] <─────┤
                                              │
@@ -38,7 +38,7 @@ Trust boundaries are the local-file importer, microphone and device APIs, browse
 | ZIP slip, duplicate/confusable paths, active report content           | Fixed allowlist, normalized safe paths, duplicate rejection, script-free report, escaped metadata, no imported executable content.                                                 |
 | CSV formula injection                                                 | Prefix spreadsheet-significant cells and quote RFC 4180 fields.                                                                                                                    |
 | Script or worker injection                                            | Bundled same-origin assets only, no `eval`/dynamic imported code/blob workers, strict production meta CSP.                                                                         |
-| Recording without clear intent                                        | Explicit microphone grant and Start/Record taps, persistent non-color recording indicator, foreground-only capture, no auto-resume.                                                |
+| Recording without clear intent                                        | Explicit microphone grant and Start/Record taps, persistent non-color recording indicator, foreground-only capture, interruption disclosure, and no auto-resume.                   |
 | Partial or corrupt take after interruption                            | One-second temporary chunks, journal/commit state, hash/length/MIME commit, recoverable partial finalization, startup orphan cleanup.                                              |
 | Accidental reference redistribution                                   | Reference audio excluded by default; explicit rights warning and package-size checks before opt-in.                                                                                |
 | Cross-project-site origin collision                                   | `singscope`-namespaced IndexedDB, OPFS paths, caches, events, and download names.                                                                                                  |
@@ -57,4 +57,4 @@ GitHub Pages cannot provide `Permissions-Policy` or CSP `frame-ancestors` respon
 - Local files are available to anyone with access to the unlocked device/browser profile; SingScope does not encrypt at rest.
 - iOS may evict site data, reroute audio, stop background work, or terminate the process without notice.
 - Export recipients and share destinations are outside SingScope's control.
-- Monophonic pitch detection can produce octave and confidence errors; it is a coaching aid, not a medical or diagnostic instrument.
+- Monophonic pitch detection can produce octave and confidence errors in uploaded or directly recorded sources; it is an editable coaching aid, not chord transcription or a medical/diagnostic instrument.

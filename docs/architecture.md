@@ -41,7 +41,9 @@ IDs are UUIDs. Metadata dates are UTC ISO-8601 values. Timeline values are finit
 
 The first Start tap resumes the context, requests wake lock, and invokes `HTMLMediaElement.play()` in the same user activation. The single persistent media element stays silent through countdown, then seeks/re-anchors at the loop boundary and its Web Audio gain ramps in. A rejected play is surfaced as “Tap to retry.”
 
-The microphone stream is split. `MediaRecorder` writes supported encoded one-second chunks to temporary binary storage. An `AudioWorklet` only batches PCM, sample-clock stamps, RMS, and peaks; pooled transferable buffers enter a bounded worker queue. Heavy pitch work never runs in a React render or the worklet. Foreground loss/interruption finalizes a recoverable partial take and never auto-resumes.
+The practice microphone stream is split. `MediaRecorder` writes supported encoded one-second chunks to temporary binary storage. An `AudioWorklet` only batches PCM, sample-clock stamps, RMS, and peaks; pooled transferable buffers enter a bounded worker queue. Heavy pitch work never runs in a React render or the worklet. Foreground loss/interruption finalizes a recoverable partial take and never auto-resumes.
+
+Project setup also offers a direct **Record melody** path for short, dry monophonic sources. It invokes microphone access from an explicit user action, records locally, and feeds the completed source into the same validation, memory-admission, YIN analysis, and candidate-note pipeline used by an uploaded isolated source. An interruption stops this capture and is surfaced to the user; it is never resumed automatically.
 
 ## Pitch detector decision
 
@@ -53,7 +55,9 @@ YIN's cumulative mean normalized difference provides the candidate lag. Guardrai
 
 MIDI parsing uses statically bundled same-origin `midi-json-parser-broker` and `midi-json-parser-worker` entrypoints. Format 0/1 PPQN files receive a merged tempo map. Format 2 and SMPTE division are rejected. Track/event/file limits apply before commit. Note overlap is preserved and flagged unscorable until corrected.
 
-Manual editing offers pointer interaction and an authoritative form/list path. Isolated monophonic analysis reuses the detector and produces a draft candidate revision. Whole-file decoding is limited by an explicit memory budget. The DSP layer defines a bounded, cancellable foreground media-pass contract for larger accepted sources, but the current browser UI does not yet connect that adapter and asks for a shorter source instead. Mixed-song source separation is outside this MVP.
+Manual editing offers pointer interaction and an authoritative form/list path. Uploaded or directly recorded isolated monophonic analysis reuses the detector and produces a draft candidate revision whose source-asset link is retained. Intended direct recordings are short phrases sung, hummed, whistled, or played one note at a time on a single-note instrument. Candidate pitches appear as editable piano-note names and timings; they are estimates, not an authoritative transcription.
+
+Whole-file decoding is limited by an explicit memory budget. The DSP layer defines a bounded, cancellable foreground media-pass contract for larger accepted sources, but the current browser UI does not yet connect that adapter and asks for a shorter source instead. Chord/polyphonic transcription and mixed-song source separation are outside this MVP.
 
 ## Persistence and recovery
 

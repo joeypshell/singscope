@@ -14,10 +14,10 @@ Record device model, iOS build, app commit SHA, audio route, available storage a
 
 ## Permission and audio routes
 
-- [ ] Allow, deny, and recover microphone permission; record actual applied capture settings.
+- [ ] Allow, deny, and recover microphone permission for both **Record melody** setup capture and practice takes; record actual applied capture settings.
 - [ ] Test the built-in microphone and one wired/USB-C headset; label AirPods and speaker tests compatibility-only.
 - [ ] Confirm multiple labeled inputs appear only when iOS exposes them.
-- [ ] Exercise lock, Home/app switch, Siri/call, route change, mic-track stop, and context interruption. Each must finalize a partial take and never auto-resume.
+- [ ] Exercise lock, Home/app switch, Siri/call, route change, mic-track stop, and context interruption during both capture paths. Practice must finalize a partial take; setup melody capture must stop visibly. Neither may auto-resume.
 - [ ] Confirm rejected media playback exposes a working “Tap to retry” user action.
 
 ## Practice and performance
@@ -30,6 +30,8 @@ Record device model, iOS build, app commit SHA, audio route, available storage a
 ## Files, review and export
 
 - [ ] Import backing audio, isolated monophonic audio, MIDI format 0/1, a malformed/oversized example, and a project backup.
+- [ ] In both Safari and the installed Home Screen app, record a short sung, hummed, whistled, and single-note-instrument melody; run local analysis; verify piano-note names/timings; correct the result with touch and exact inputs; then save and relaunch.
+- [ ] Try a chord/polyphonic or mixed-song source and confirm the product makes no transcription or vocal-isolation claim and continues to label generated notes as estimates requiring review.
 - [ ] Select a melody track; transpose/align it; correct overlap with both touch controls and exact form inputs.
 - [ ] Review raw/smoothed and pitch/cents views; inspect points, gaps, low-confidence ranges and missed entrances.
 - [ ] Prepare/share a <=64 MiB package; Save to Files a larger allowed package; open the ZIP and play the encoded recording.

@@ -1,5 +1,6 @@
 export * from './capture-pipeline'
 export * from './microphone'
+export * from './recorded-source'
 export * from './recorder'
 export * from './reference-player'
 export type * from './types'

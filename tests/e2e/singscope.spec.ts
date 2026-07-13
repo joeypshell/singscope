@@ -152,6 +152,95 @@ test('backing audio and MIDI track selection create a rendered target', async ({
   expect(noteCount).toBe(1)
 })
 
+test('recorded melody becomes editable piano notes and a playable local reference', async ({
+  page,
+}) => {
+  await openApp(page)
+  await page.getByRole('button', { name: 'New project' }).click()
+  await expect(page.getByRole('heading', { name: 'Reference and target' })).toBeVisible()
+
+  await page.getByLabel('Project title').fill('Recorded piano melody')
+  const sources = page.getByRole('group', { name: 'Target source' })
+  await sources.getByRole('button', { name: 'Audio / record' }).click()
+
+  const recorder = page.getByRole('region', { name: 'Record a melody' })
+  await expect(recorder.getByLabel('Also use this melody audio as the backing audio')).toBeChecked()
+  await recorder.getByRole('button', { name: 'Start recording' }).click()
+  await expect(recorder.getByRole('status')).toContainText('Recording melody')
+  await recorder.getByRole('button', { name: 'Stop and analyze' }).click()
+
+  await expect(page.getByText(/3 estimated notes from your recording/)).toBeVisible({
+    timeout: 15_000,
+  })
+  await expect(page.getByLabel('Piano note sequence')).toContainText('C4 · E4 · G4')
+  const midiNotes = page.getByLabel('MIDI note')
+  await expect(midiNotes).toHaveCount(3)
+  await midiNotes.first().fill('62')
+  await expect(page.getByLabel('Piano note sequence')).toContainText('D4 · E4 · G4')
+
+  const dismiss = page.getByRole('button', { name: 'Dismiss' })
+  if (await dismiss.isVisible()) await dismiss.click()
+  await page.getByRole('button', { name: 'Save project' }).click()
+  await expect(page).toHaveURL(/#\/practice\//, { timeout: 10_000 })
+  await expect(page.getByRole('heading', { name: 'Recorded piano melody' })).toBeVisible()
+
+  const persisted = await page.evaluate(async () => {
+    const request = indexedDB.open('singscope:app:v1')
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error ?? new Error('IndexedDB could not be opened.'))
+    })
+    try {
+      const projectTransaction = database.transaction('projects', 'readonly')
+      const projectsRequest = projectTransaction.objectStore('projects').getAll()
+      const records = await new Promise<Record<string, unknown>[]>((resolve, reject) => {
+        projectsRequest.onsuccess = () =>
+          resolve(projectsRequest.result as Record<string, unknown>[])
+        projectsRequest.onerror = () =>
+          reject(projectsRequest.error ?? new Error('Projects could not be read.'))
+      })
+      const payload = records[0]?.['payload'] as
+        | {
+            referenceAssetId?: string
+            targetSourceAssetId?: string
+            targetMode?: string
+            targetSourceMimeType?: string
+            notes?: { midiNote?: number }[]
+            targetPitchPoints?: { frequencyHz?: number | null }[]
+          }
+        | undefined
+      const assetTransaction = database.transaction('assets', 'readonly')
+      const assetsRequest = assetTransaction.objectStore('assets').getAll()
+      const assets = await new Promise<Record<string, unknown>[]>((resolve, reject) => {
+        assetsRequest.onsuccess = () => resolve(assetsRequest.result as Record<string, unknown>[])
+        assetsRequest.onerror = () =>
+          reject(assetsRequest.error ?? new Error('Assets could not be read.'))
+      })
+      return {
+        targetMode: payload?.targetMode,
+        targetSourceMimeType: payload?.targetSourceMimeType,
+        sharesReference: payload?.referenceAssetId === payload?.targetSourceAssetId,
+        midiNotes: payload?.notes?.map((note) => note.midiNote),
+        hasPitchGaps: payload?.targetPitchPoints?.some((point) => point.frequencyHz === null),
+        committedAssetCount: assets.filter((asset) => asset['status'] === 'committed').length,
+      }
+    } finally {
+      database.close()
+    }
+  })
+  expect(persisted).toMatchObject({
+    targetMode: 'isolated-vocal',
+    targetSourceMimeType: 'audio/webm;codecs=opus',
+    sharesReference: true,
+    midiNotes: [62, 64, 67],
+    hasPitchGaps: true,
+    committedAssetCount: 1,
+  })
+
+  await page.reload()
+  await expect(page.getByRole('heading', { name: 'Recorded piano melody' })).toBeVisible()
+})
+
 test('prepared feedback ZIP contains every required coach file', async ({ page }) => {
   await recordSyntheticTake(page)
 

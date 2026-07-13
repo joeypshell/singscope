@@ -1,5 +1,8 @@
 import { StatusBanner } from '../../components/StatusBanner'
 import { TargetNoteEditor, type EditableTargetNote } from '../../components/TargetNoteEditor'
+import { RecordedMelodyControl, type RecordedMelodyView } from './RecordedMelodyControl'
+
+export type { RecordedMelodyPhase, RecordedMelodyView } from './RecordedMelodyControl'
 
 export type TargetMode = 'midi' | 'manual' | 'isolated-vocal'
 
@@ -21,6 +24,7 @@ export interface ProjectSetupView {
   readonly canSave: boolean
   readonly midiTracks?: readonly MidiTrackView[] | undefined
   readonly selectedMidiTrackId?: string | null | undefined
+  readonly recordedMelody?: RecordedMelodyView | undefined
 }
 
 export interface ProjectSetupScreenProps {
@@ -32,6 +36,11 @@ export interface ProjectSetupScreenProps {
   readonly onMidiFile: (file: File) => void
   readonly onMidiTrackChange?: ((trackId: string) => void) | undefined
   readonly onIsolatedVocalFile: (file: File) => void
+  readonly onStartRecordedMelody?: (() => void) | undefined
+  readonly onStopRecordedMelody?: (() => void) | undefined
+  readonly onRecordMelodyAgain?: (() => void) | undefined
+  readonly useRecordedSourceAsReference?: boolean | undefined
+  readonly onUseRecordedSourceAsReferenceChange?: ((checked: boolean) => void) | undefined
   readonly onTranspositionChange: (semitones: number) => void
   readonly onAlignmentChange: (seconds: number) => void
   readonly onNoteChange: (note: EditableTargetNote) => void
@@ -57,6 +66,11 @@ export function ProjectSetupScreen({
   onMidiFile,
   onMidiTrackChange,
   onIsolatedVocalFile,
+  onStartRecordedMelody,
+  onStopRecordedMelody,
+  onRecordMelodyAgain,
+  useRecordedSourceAsReference,
+  onUseRecordedSourceAsReferenceChange,
   onTranspositionChange,
   onAlignmentChange,
   onNoteChange,
@@ -64,6 +78,12 @@ export function ProjectSetupScreen({
   onRemoveNote,
   onSave,
 }: ProjectSetupScreenProps) {
+  const recordedMelodyAvailable =
+    model.recordedMelody !== undefined &&
+    onStartRecordedMelody !== undefined &&
+    onStopRecordedMelody !== undefined &&
+    onRecordMelodyAgain !== undefined
+
   return (
     <main className="ss-screen">
       <header className="ss-screen__header">
@@ -107,9 +127,9 @@ export function ProjectSetupScreen({
         <section className="ss-card ss-stack" aria-labelledby="target-heading">
           <div>
             <h2 id="target-heading">2. Target melody</h2>
-            <p>Choose MIDI, touch/manual entry, or an already isolated monophonic vocal.</p>
+            <p>Choose MIDI, enter notes manually, or upload or record monophonic audio.</p>
           </div>
-          <div className="ss-segmented" aria-label="Target source">
+          <div className="ss-segmented" role="group" aria-label="Target source">
             {(['midi', 'manual', 'isolated-vocal'] as const).map((mode) => (
               <button
                 key={mode}
@@ -117,7 +137,7 @@ export function ProjectSetupScreen({
                 aria-pressed={model.targetMode === mode}
                 onClick={() => onTargetModeChange(mode)}
               >
-                {mode === 'isolated-vocal' ? 'Isolated vocal' : mode === 'midi' ? 'MIDI' : 'Manual'}
+                {mode === 'isolated-vocal' ? 'Audio / record' : mode === 'midi' ? 'MIDI' : 'Manual'}
               </button>
             ))}
           </div>
@@ -161,11 +181,11 @@ export function ProjectSetupScreen({
             <div className="ss-stack">
               <StatusBanner
                 tone="info"
-                title="Monophonic, isolated sources only"
-                message="SingScope does not isolate vocals from a mixed song or claim to extract its melody."
+                title="Local-only, single-note audio"
+                message="Upload or record an isolated voice or instrument, one note at a time. SingScope does not isolate mixed songs or analyze chords."
               />
               <label className="ss-field">
-                <span>Isolated vocal (32 MiB / 8 minutes maximum)</span>
+                <span>Upload monophonic audio (32 MiB / 8 minutes maximum)</span>
                 <input
                   className="ss-file-input"
                   type="file"
@@ -177,6 +197,16 @@ export function ProjectSetupScreen({
                   }}
                 />
               </label>
+              {recordedMelodyAvailable ? (
+                <RecordedMelodyControl
+                  model={model.recordedMelody}
+                  onStart={onStartRecordedMelody}
+                  onStop={onStopRecordedMelody}
+                  onRecordAgain={onRecordMelodyAgain}
+                  useAsReference={useRecordedSourceAsReference}
+                  onUseAsReferenceChange={onUseRecordedSourceAsReferenceChange}
+                />
+              ) : null}
             </div>
           ) : null}
           <p role="status">{model.targetStatus}</p>
@@ -204,6 +234,7 @@ export function ProjectSetupScreen({
           </div>
           <TargetNoteEditor
             notes={model.notes}
+            transpositionSemitones={model.transpositionSemitones}
             onChange={onNoteChange}
             onAdd={onAddNote}
             onRemove={onRemoveNote}

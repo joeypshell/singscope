@@ -23,6 +23,117 @@ export async function installDeterministicBrowserAdapters(page: Page): Promise<v
         value: undefined,
       })
 
+      const deterministicMelodySamples = (): Float32Array => {
+        const sampleRate = 48_000
+        const segments = [
+          { seconds: 0.15, frequencyHz: 0 },
+          { seconds: 0.65, frequencyHz: 261.625565 },
+          { seconds: 0.18, frequencyHz: 0 },
+          { seconds: 0.65, frequencyHz: 329.627557 },
+          { seconds: 0.18, frequencyHz: 0 },
+          { seconds: 0.65, frequencyHz: 391.995436 },
+          { seconds: 0.15, frequencyHz: 0 },
+        ]
+        const length = segments.reduce(
+          (total, segment) => total + Math.round(segment.seconds * sampleRate),
+          0,
+        )
+        const samples = new Float32Array(length)
+        let offset = 0
+        for (const segment of segments) {
+          const segmentLength = Math.round(segment.seconds * sampleRate)
+          if (segment.frequencyHz > 0) {
+            for (let index = 0; index < segmentLength; index += 1) {
+              const envelope = Math.min(1, index / 480, (segmentLength - index - 1) / 480)
+              samples[offset + index] =
+                0.35 * envelope * Math.sin((2 * Math.PI * segment.frequencyHz * index) / sampleRate)
+            }
+          }
+          offset += segmentLength
+        }
+        return samples
+      }
+
+      const deterministicMelodyWav = (): ArrayBuffer => {
+        const samples = deterministicMelodySamples()
+        const buffer = new ArrayBuffer(44 + samples.length * 2)
+        const view = new DataView(buffer)
+        const ascii = (offset: number, value: string) => {
+          for (let index = 0; index < value.length; index += 1) {
+            view.setUint8(offset + index, value.charCodeAt(index))
+          }
+        }
+        ascii(0, 'RIFF')
+        view.setUint32(4, buffer.byteLength - 8, true)
+        ascii(8, 'WAVE')
+        ascii(12, 'fmt ')
+        view.setUint32(16, 16, true)
+        view.setUint16(20, 1, true)
+        view.setUint16(22, 1, true)
+        view.setUint32(24, 48_000, true)
+        view.setUint32(28, 96_000, true)
+        view.setUint16(32, 2, true)
+        view.setUint16(34, 16, true)
+        ascii(36, 'data')
+        view.setUint32(40, samples.length * 2, true)
+        for (let index = 0; index < samples.length; index += 1) {
+          const sample = Math.max(-1, Math.min(1, samples[index] ?? 0))
+          view.setInt16(44 + index * 2, Math.round(sample * 0x7fff), true)
+        }
+        return buffer
+      }
+
+      class DeterministicAudioTrack extends EventTarget {
+        readonly id = 'singscope-e2e-microphone'
+        readonly kind = 'audio'
+        readonly label = 'Deterministic microphone'
+        enabled = true
+        muted = false
+        readyState: MediaStreamTrackState = 'live'
+
+        getSettings(): MediaTrackSettings {
+          return {
+            deviceId: this.id,
+            sampleRate: 48_000,
+            channelCount: 1,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          }
+        }
+
+        stop(): void {
+          this.readyState = 'ended'
+        }
+      }
+
+      class DeterministicMediaDevices extends EventTarget {
+        getUserMedia(): Promise<MediaStream> {
+          const track = new DeterministicAudioTrack()
+          return Promise.resolve({
+            getAudioTracks: () => [track],
+            getTracks: () => [track],
+          } as unknown as MediaStream)
+        }
+
+        enumerateDevices(): Promise<MediaDeviceInfo[]> {
+          return Promise.resolve([
+            {
+              deviceId: 'singscope-e2e-microphone',
+              groupId: 'singscope-e2e-group',
+              kind: 'audioinput',
+              label: 'Deterministic microphone',
+              toJSON: () => ({}),
+            },
+          ])
+        }
+      }
+
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: new DeterministicMediaDevices(),
+      })
+
       class DeterministicMediaRecorder extends EventTarget {
         static isTypeSupported(mimeType: string): boolean {
           return mimeType.startsWith('audio/webm')
@@ -46,7 +157,7 @@ export async function installDeterministicBrowserAdapters(page: Page): Promise<v
         stop(): void {
           if (this.state === 'inactive') return
           this.state = 'inactive'
-          const encoded = new Blob([new TextEncoder().encode('singscope-e2e-webm')], {
+          const encoded = new Blob([deterministicMelodyWav()], {
             type: this.mimeType,
           })
           this.dispatchEvent(new MessageEvent('dataavailable', { data: encoded }))
@@ -146,12 +257,42 @@ export async function installDeterministicBrowserAdapters(page: Page): Promise<v
               stop: () => undefined,
             } as OscillatorNode
           }
+
+          decodeAudioData(): Promise<AudioBuffer> {
+            const samples = deterministicMelodySamples()
+            return Promise.resolve({
+              duration: samples.length / 48_000,
+              length: samples.length,
+              numberOfChannels: 1,
+              sampleRate: 48_000,
+              getChannelData: () => samples,
+            } as unknown as AudioBuffer)
+          }
         }
 
         Object.defineProperty(window, 'AudioContext', {
           configurable: true,
           value: DeterministicAudioContext,
         })
+      }
+
+      const AudioContextConstructor = window.AudioContext
+      try {
+        Object.defineProperty(AudioContextConstructor.prototype, 'decodeAudioData', {
+          configurable: true,
+          value: () => {
+            const samples = deterministicMelodySamples()
+            return Promise.resolve({
+              duration: samples.length / 48_000,
+              length: samples.length,
+              numberOfChannels: 1,
+              sampleRate: 48_000,
+              getChannelData: () => samples,
+            } as unknown as AudioBuffer)
+          },
+        })
+      } catch {
+        // A host codec can decode the deterministic WAV if its prototype is locked.
       }
 
       // The Windows WebKit build has no system audio codecs. The returned value

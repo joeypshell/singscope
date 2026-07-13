@@ -6,6 +6,12 @@ import {
   createAnalyzedTargetDraftInput,
   decideMonophonicAnalysisStrategy,
 } from './audio/dsp'
+import {
+  RecordedSourceCapture,
+  type CaptureSettings,
+  type RecordedSourceResult,
+  type RecordedSourceSnapshot,
+} from './audio/runtime'
 import { centsBetweenMidi, findOverlappingNoteIds } from './domain'
 import {
   DashboardScreen,
@@ -251,6 +257,7 @@ interface SetupState {
   readonly targetSourceAssetId: string | null
   readonly targetSourceName: string | null
   readonly targetSourceMimeType: string | null
+  readonly targetSourceDurationSeconds: number
   readonly targetSourceFile: File | null
   readonly targetPitchPoints: readonly AppTargetPitchPoint[]
   readonly notes: readonly AppTargetNote[]
@@ -281,6 +288,12 @@ function initialSetup(project: AppProject | null): SetupState {
     targetSourceAssetId: project?.targetSourceAssetId ?? null,
     targetSourceName: project?.targetSourceName ?? null,
     targetSourceMimeType: project?.targetSourceMimeType ?? null,
+    targetSourceDurationSeconds:
+      project !== null &&
+      project.targetSourceAssetId !== null &&
+      project.targetSourceAssetId === project.referenceAssetId
+        ? project.referenceDurationSeconds
+        : 0,
     targetSourceFile: null,
     targetPitchPoints: project?.targetPitchPoints ?? [],
     notes: project?.notes ?? [],
@@ -315,16 +328,147 @@ function normalizedScoring(notes: readonly AppTargetNote[]): readonly AppTargetN
   return notes.map((note) => ({ ...note, scorable: !overlaps.has(note.id) }))
 }
 
+interface AnalyzedSource {
+  readonly durationSeconds: number
+  readonly sourceAssetId: string
+  readonly targetRevision: number
+  readonly notes: readonly AppTargetNote[]
+  readonly pitchPoints: readonly AppTargetPitchPoint[]
+}
+
+async function analyzeMonophonicSourceFile(
+  file: File,
+  existing: AppProject | null,
+): Promise<AnalyzedSource> {
+  const durationSeconds = await validateAudioFile(file, 'isolated')
+  const provisional = decideMonophonicAnalysisStrategy({
+    encodedByteLength: file.size,
+    durationSeconds,
+    sampleRateHz: 48_000,
+    channelCount: 1,
+  })
+  if (provisional.strategy !== 'offline-buffer') {
+    throw new Error(
+      'This accepted source needs the cancellable foreground media pass. Keep the source shorter or mono for this setup screen.',
+    )
+  }
+
+  const context = new AudioContext()
+  try {
+    const buffer = await context.decodeAudioData(await file.arrayBuffer())
+    const admission = decideMonophonicAnalysisStrategy({
+      encodedByteLength: file.size,
+      durationSeconds: buffer.duration,
+      sampleRateHz: buffer.sampleRate,
+      channelCount: buffer.numberOfChannels,
+    })
+    if (admission.strategy !== 'offline-buffer') {
+      throw new Error(
+        'Decoded audio exceeds the whole-file memory budget; use a shorter monophonic source.',
+      )
+    }
+    const analysis = await analyzeMonophonicAudioBuffer(buffer, { admission })
+    const sourceAssetId = crypto.randomUUID()
+    const draft = createAnalyzedTargetDraftInput(analysis, {
+      sourceAssetId,
+      previousRevision: existing
+        ? {
+            id: existing.id,
+            revision: existing.targetRevision,
+            alignmentSeconds: existing.alignmentSeconds,
+            transposeSemitones: existing.transpositionSemitones,
+          }
+        : null,
+    })
+    if (draft.notes.length === 0) {
+      throw new Error(
+        'No stable notes were detected. Try again in a quieter place, hold each note longer, and leave a short gap between notes.',
+      )
+    }
+    return {
+      durationSeconds: buffer.duration,
+      sourceAssetId,
+      targetRevision: draft.revision - 1,
+      notes: draft.notes.map((note) => ({
+        id: crypto.randomUUID(),
+        startSeconds: note.startSeconds,
+        endSeconds: note.endSeconds,
+        midiNote: note.midiNote,
+        lyric: '',
+        scorable: note.scorable,
+      })),
+      pitchPoints: draft.pitchPoints,
+    }
+  } finally {
+    await context.close()
+  }
+}
+
+interface RecordedMelodyState {
+  readonly phase: 'idle' | 'requesting' | 'recording' | 'finalizing' | 'analyzing' | 'error'
+  readonly elapsedSeconds: number
+  readonly captureSettings: CaptureSettings | null
+  readonly errorMessage: string | null
+  readonly hasRecordedSource: boolean
+}
+
+const INITIAL_RECORDED_MELODY: RecordedMelodyState = {
+  phase: 'idle',
+  elapsedSeconds: 0,
+  captureSettings: null,
+  errorMessage: null,
+  hasRecordedSource: false,
+}
+
+function captureFailureMessage(error: unknown): string {
+  if (
+    error instanceof DOMException &&
+    (error.name === 'NotAllowedError' || error.name === 'SecurityError')
+  ) {
+    return 'Allow microphone access for SingScope in Safari settings, then try again.'
+  }
+  return asMessage(error)
+}
+
+function recordedFileName(mimeType: string): string {
+  const extension = mimeType.includes('mp4')
+    ? 'm4a'
+    : mimeType.includes('webm')
+      ? 'webm'
+      : mimeType.includes('wav')
+        ? 'wav'
+        : 'audio'
+  const timestamp = new Date().toISOString().replaceAll(/[:.]/g, '-')
+  return `recorded-melody-${timestamp}.${extension}`
+}
+
+function recordedViewPhase(snapshot: RecordedSourceSnapshot): RecordedMelodyState['phase'] {
+  switch (snapshot.phase) {
+    case 'idle':
+    case 'discarded':
+      return 'idle'
+    case 'requesting':
+      return 'requesting'
+    case 'recording':
+      return 'recording'
+    case 'finalizing':
+    case 'complete':
+      return 'finalizing'
+    case 'error':
+      return 'error'
+  }
+}
+
 function setupValidation(state: SetupState): string | null {
   if (!state.title.trim()) return 'Enter a project title.'
   if (!state.referenceName || state.referenceDurationSeconds <= 0)
-    return 'Choose a valid backing audio file.'
+    return 'Choose a valid backing audio file, or use the melody audio as the reference.'
   if (
     state.targetMode === 'isolated-vocal' &&
     !state.targetSourceAssetId &&
     !state.targetSourceFile
   ) {
-    return 'Choose an isolated monophonic vocal source before saving this target.'
+    return 'Upload or record a monophonic melody before saving this target.'
   }
   if (state.notes.length === 0) return 'Add or import at least one target note.'
   if (
@@ -356,8 +500,227 @@ function SetupRoute() {
       ? (projects.find((project) => project.id === projectId) ?? null)
       : null
   const [state, setState] = useState(() => initialSetup(existing))
+  const [useRecordedSourceAsReference, setUseRecordedSourceAsReference] = useState(
+    () =>
+      existing === null ||
+      (existing.targetSourceAssetId !== null &&
+        existing.targetSourceAssetId === existing.referenceAssetId),
+  )
+  const [recordedMelody, setRecordedMelody] = useState<RecordedMelodyState>(INITIAL_RECORDED_MELODY)
+  const stateRef = useRef(state)
+  const useRecordedSourceAsReferenceRef = useRef(useRecordedSourceAsReference)
+  const recordedCaptureRef = useRef<RecordedSourceCapture | null>(null)
+  const recordedCaptureUnsubscribeRef = useRef<(() => void) | null>(null)
+  const recordedCaptureGenerationRef = useRef(0)
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
+  useEffect(() => {
+    useRecordedSourceAsReferenceRef.current = useRecordedSourceAsReference
+  }, [useRecordedSourceAsReference])
   const patch = (value: Partial<SetupState>) => setState((current) => ({ ...current, ...value }))
   const validation = setupValidation(state)
+
+  const applyAnalyzedSource = useCallback(
+    async (
+      file: File,
+      origin: 'upload' | 'recording',
+      partialReason: RecordedSourceResult['partialReason'] = null,
+    ) => {
+      const analyzed = await analyzeMonophonicSourceFile(file, stateRef.current.existing)
+      const useAsReference = useRecordedSourceAsReferenceRef.current
+      const sourceDescription = origin === 'recording' ? 'from your recording' : 'in a new draft'
+      const interruptionMessage = partialReason
+        ? ' The recording was interrupted and did not resume automatically; review this recovered partial draft carefully.'
+        : ''
+      setState((current) => ({
+        ...current,
+        busy: false,
+        error: null,
+        targetMode: 'isolated-vocal',
+        targetSourceAssetId: analyzed.sourceAssetId,
+        targetSourceName: file.name.slice(0, 255),
+        targetSourceMimeType: file.type || 'application/octet-stream',
+        targetSourceDurationSeconds: analyzed.durationSeconds,
+        targetSourceFile: file,
+        targetRevision: analyzed.targetRevision,
+        notes: analyzed.notes,
+        targetPitchPoints: analyzed.pitchPoints,
+        targetStatus: `${analyzed.notes.length} estimated notes ${sourceDescription}. Review the piano note names, timing, and MIDI values before saving.${interruptionMessage}`,
+        ...(useAsReference
+          ? {
+              referenceAssetId: analyzed.sourceAssetId,
+              referenceName: file.name.slice(0, 255),
+              referenceMimeType: file.type || 'application/octet-stream',
+              referenceDurationSeconds: analyzed.durationSeconds,
+              referenceFile: file,
+            }
+          : {}),
+      }))
+      return analyzed
+    },
+    [],
+  )
+
+  const releaseRecordedCapture = useCallback((capture: RecordedSourceCapture) => {
+    if (recordedCaptureRef.current !== capture) return
+    recordedCaptureUnsubscribeRef.current?.()
+    recordedCaptureUnsubscribeRef.current = null
+    recordedCaptureRef.current = null
+  }, [])
+
+  const startRecordedMelody = useCallback(() => {
+    const current = stateRef.current
+    if (
+      current.notes.length > 0 &&
+      !window.confirm(
+        'Record a new analyzed draft? Existing notes remain unchanged unless the new recording is analyzed successfully and you save it.',
+      )
+    ) {
+      return
+    }
+    if (recordedCaptureRef.current) return
+
+    const generation = ++recordedCaptureGenerationRef.current
+    const capture = new RecordedSourceCapture()
+    recordedCaptureRef.current = capture
+    setRecordedMelody({
+      phase: 'requesting',
+      elapsedSeconds: 0,
+      captureSettings: null,
+      errorMessage: null,
+      hasRecordedSource: recordedMelody.hasRecordedSource,
+    })
+    setState((value) => ({
+      ...value,
+      busy: true,
+      error: null,
+      targetStatus: 'Requesting microphone access on this device…',
+    }))
+
+    recordedCaptureUnsubscribeRef.current = capture.subscribe((snapshot) => {
+      if (
+        generation !== recordedCaptureGenerationRef.current ||
+        recordedCaptureRef.current !== capture
+      ) {
+        return
+      }
+      const phase = recordedViewPhase(snapshot)
+      setRecordedMelody((value) => ({
+        ...value,
+        phase,
+        elapsedSeconds: snapshot.durationSeconds,
+        captureSettings: snapshot.settings,
+        errorMessage: snapshot.error,
+      }))
+      if (phase === 'recording') {
+        setState((value) => ({
+          ...value,
+          targetStatus: 'Recording melody locally. Sing, hum, whistle, or play one note at a time.',
+        }))
+      }
+    })
+
+    void capture.result
+      .then(async (result) => {
+        if (generation !== recordedCaptureGenerationRef.current) return
+        releaseRecordedCapture(capture)
+        setRecordedMelody((value) => ({
+          ...value,
+          phase: 'analyzing',
+          elapsedSeconds: result.durationSeconds,
+          captureSettings: result.settings,
+          errorMessage: null,
+        }))
+        setState((value) => ({
+          ...value,
+          busy: true,
+          targetStatus: 'Analyzing recording on this device…',
+        }))
+        const file = new File([result.blob], recordedFileName(result.mimeType), {
+          type: result.mimeType,
+          lastModified: Date.now(),
+        })
+        try {
+          await applyAnalyzedSource(file, 'recording', result.partialReason)
+          if (generation !== recordedCaptureGenerationRef.current) return
+          setRecordedMelody((value) => ({
+            ...value,
+            phase: 'idle',
+            hasRecordedSource: true,
+          }))
+        } catch (error) {
+          if (generation !== recordedCaptureGenerationRef.current) return
+          const message = captureFailureMessage(error)
+          setRecordedMelody((value) => ({
+            ...value,
+            phase: 'error',
+            errorMessage: message,
+          }))
+          setState((value) => ({
+            ...value,
+            busy: false,
+            error: message,
+            targetStatus: 'Analysis stopped without changing the current target notes.',
+          }))
+        }
+      })
+      .catch((error: unknown) => {
+        if (
+          generation !== recordedCaptureGenerationRef.current ||
+          recordedCaptureRef.current !== capture
+        ) {
+          return
+        }
+        releaseRecordedCapture(capture)
+        const message = captureFailureMessage(error)
+        setRecordedMelody((value) => ({
+          ...value,
+          phase: 'error',
+          errorMessage: message,
+        }))
+        setState((value) => ({
+          ...value,
+          busy: false,
+          error: message,
+          targetStatus: 'Recording stopped without changing the current target notes.',
+        }))
+      })
+
+    void capture.start().catch((error: unknown) => {
+      if (
+        generation !== recordedCaptureGenerationRef.current ||
+        recordedCaptureRef.current !== capture
+      ) {
+        return
+      }
+      releaseRecordedCapture(capture)
+      const message = captureFailureMessage(error)
+      setRecordedMelody((value) => ({
+        ...value,
+        phase: 'error',
+        errorMessage: message,
+      }))
+      setState((value) => ({
+        ...value,
+        busy: false,
+        error: message,
+        targetStatus: 'Microphone recording did not start.',
+      }))
+    })
+  }, [applyAnalyzedSource, recordedMelody.hasRecordedSource, releaseRecordedCapture])
+
+  useEffect(
+    () => () => {
+      recordedCaptureGenerationRef.current += 1
+      recordedCaptureUnsubscribeRef.current?.()
+      recordedCaptureUnsubscribeRef.current = null
+      const capture = recordedCaptureRef.current
+      recordedCaptureRef.current = null
+      if (capture) void capture.discard().catch(() => undefined)
+    },
+    [],
+  )
 
   const selectMidiTrack = useCallback(
     (trackId: string, parsed = state.midi) => {
@@ -380,7 +743,7 @@ function SetupRoute() {
         title: state.title,
         referenceName: state.referenceName,
         targetMode: state.targetMode,
-        targetStatus: state.busy ? 'Working locally…' : state.targetStatus,
+        targetStatus: state.targetStatus,
         notes: state.notes,
         transpositionSemitones: state.transpositionSemitones,
         alignmentSeconds: state.alignmentSeconds,
@@ -388,21 +751,24 @@ function SetupRoute() {
         canSave: !state.busy && validation === null,
         midiTracks: state.midiTracks,
         selectedMidiTrackId: state.selectedMidiTrackId,
+        recordedMelody,
       }}
       onBack={() => navigate('/')}
       onTitleChange={(title) => patch({ title, error: null })}
       onReferenceFile={(file) => {
         patch({ busy: true, error: null })
         void validateAudioFile(file, 'backing')
-          .then((duration) =>
+          .then((duration) => {
+            setUseRecordedSourceAsReference(false)
             patch({
               busy: false,
+              referenceAssetId: null,
               referenceFile: file,
               referenceName: file.name.slice(0, 255),
               referenceMimeType: file.type || 'application/octet-stream',
               referenceDurationSeconds: duration,
-            }),
-          )
+            })
+          })
           .catch((error: unknown) => patch({ busy: false, error: asMessage(error) }))
       }}
       onTargetModeChange={(targetMode) =>
@@ -460,74 +826,63 @@ function SetupRoute() {
         )
           return
         patch({ busy: true, error: null, targetStatus: 'Checking isolated-source memory budget…' })
-        void (async () => {
-          const duration = await validateAudioFile(file, 'isolated')
-          const provisional = decideMonophonicAnalysisStrategy({
-            encodedByteLength: file.size,
-            durationSeconds: duration,
-            sampleRateHz: 48_000,
-            channelCount: 1,
-          })
-          if (provisional.strategy !== 'offline-buffer') {
-            throw new Error(
-              'This accepted source needs the cancellable foreground media pass. Keep the source shorter or mono for this setup screen.',
-            )
-          }
-          const context = new AudioContext()
-          try {
-            const buffer = await context.decodeAudioData(await file.arrayBuffer())
-            const admission = decideMonophonicAnalysisStrategy({
-              encodedByteLength: file.size,
-              durationSeconds: buffer.duration,
-              sampleRateHz: buffer.sampleRate,
-              channelCount: buffer.numberOfChannels,
-            })
-            if (admission.strategy !== 'offline-buffer')
-              throw new Error(
-                'Decoded audio exceeds the whole-file memory budget; use a shorter monophonic source.',
-              )
-            const analysis = await analyzeMonophonicAudioBuffer(buffer, { admission })
-            const sourceAssetId = crypto.randomUUID()
-            const draft = createAnalyzedTargetDraftInput(analysis, {
-              sourceAssetId,
-              previousRevision: state.existing
-                ? {
-                    id: state.existing.id,
-                    revision: state.existing.targetRevision,
-                    alignmentSeconds: state.existing.alignmentSeconds,
-                    transposeSemitones: state.existing.transpositionSemitones,
-                  }
-                : null,
-            })
-            patch({
-              busy: false,
-              targetMode: 'isolated-vocal',
-              targetSourceAssetId: sourceAssetId,
-              targetSourceName: file.name.slice(0, 255),
-              targetSourceMimeType: file.type || 'application/octet-stream',
-              targetSourceFile: file,
-              targetRevision: draft.revision - 1,
-              notes: draft.notes.map((note) => ({
-                id: crypto.randomUUID(),
-                startSeconds: note.startSeconds,
-                endSeconds: note.endSeconds,
-                midiNote: note.midiNote,
-                lyric: '',
-                scorable: note.scorable,
-              })),
-              targetPitchPoints: draft.pitchPoints,
-              targetStatus: `${draft.notes.length} estimated notes in a new draft. Review and correct them before saving.`,
-            })
-          } finally {
-            await context.close()
-          }
-        })().catch((error: unknown) =>
+        void applyAnalyzedSource(file, 'upload').catch((error: unknown) =>
           patch({
             busy: false,
             error: asMessage(error),
             targetStatus: 'Analysis stopped without changing the saved revision.',
           }),
         )
+      }}
+      onStartRecordedMelody={startRecordedMelody}
+      onStopRecordedMelody={() => {
+        const capture = recordedCaptureRef.current
+        if (!capture) return
+        setRecordedMelody((value) => ({ ...value, phase: 'finalizing' }))
+        patch({ targetStatus: 'Finalizing the recording before local analysis…' })
+        void capture.stop().catch((error: unknown) => {
+          const message = captureFailureMessage(error)
+          setRecordedMelody((value) => ({
+            ...value,
+            phase: 'error',
+            errorMessage: message,
+          }))
+          patch({ busy: false, error: message, targetStatus: 'Recording could not be finalized.' })
+        })
+      }}
+      onRecordMelodyAgain={startRecordedMelody}
+      useRecordedSourceAsReference={useRecordedSourceAsReference}
+      onUseRecordedSourceAsReferenceChange={(useAsReference) => {
+        setUseRecordedSourceAsReference(useAsReference)
+        useRecordedSourceAsReferenceRef.current = useAsReference
+        const current = stateRef.current
+        if (
+          useAsReference &&
+          current.targetSourceFile &&
+          current.targetSourceAssetId &&
+          current.targetSourceDurationSeconds > 0
+        ) {
+          patch({
+            referenceAssetId: current.targetSourceAssetId,
+            referenceName: current.targetSourceName,
+            referenceMimeType: current.targetSourceMimeType,
+            referenceDurationSeconds: current.targetSourceDurationSeconds,
+            referenceFile: current.targetSourceFile,
+            error: null,
+          })
+        } else if (
+          !useAsReference &&
+          current.targetSourceAssetId !== null &&
+          current.referenceAssetId === current.targetSourceAssetId
+        ) {
+          patch({
+            referenceAssetId: null,
+            referenceName: null,
+            referenceMimeType: null,
+            referenceDurationSeconds: 0,
+            referenceFile: null,
+          })
+        }
       }}
       onTranspositionChange={(transpositionSemitones) =>
         patch({ transpositionSemitones, error: null })
@@ -547,7 +902,7 @@ function SetupRoute() {
       }
       onAddNote={() =>
         patch({
-          targetMode: 'manual',
+          targetMode: state.targetMode === 'isolated-vocal' ? 'isolated-vocal' : 'manual',
           notes: [
             ...state.notes,
             {
@@ -559,26 +914,29 @@ function SetupRoute() {
               scorable: true,
             },
           ],
-          targetStatus: 'Manual notes are authoritative after save.',
+          targetStatus:
+            state.targetMode === 'isolated-vocal'
+              ? 'Edited notes will be authoritative in the next analyzed revision.'
+              : 'Manual notes are authoritative after save.',
         })
       }
       onRemoveNote={(id) => patch({ notes: state.notes.filter((note) => note.id !== id) })}
       onSave={() => {
         patch({ busy: true, error: null })
         void (async () => {
-          const stagedAssetIds: string[] = []
+          const stagedAssetIds = new Set<string>()
           try {
-            let referenceAssetId = state.referenceAssetId
-            if (state.referenceFile) {
-              referenceAssetId = await storeBinary(state.referenceFile, state.id)
-              stagedAssetIds.push(referenceAssetId)
-            }
             const targetSourceAssetId =
               state.targetMode === 'isolated-vocal' ? state.targetSourceAssetId : null
+            let referenceAssetId = state.referenceAssetId
+
             if (
               state.targetMode === 'isolated-vocal' &&
-              state.targetSourceFile &&
-              targetSourceAssetId
+              state.referenceFile !== null &&
+              state.targetSourceFile !== null &&
+              state.referenceFile === state.targetSourceFile &&
+              targetSourceAssetId !== null &&
+              state.referenceAssetId === targetSourceAssetId
             ) {
               await storeBinary(
                 state.targetSourceFile,
@@ -586,7 +944,26 @@ function SetupRoute() {
                 targetSourceAssetId,
                 state.targetSourceMimeType ?? undefined,
               )
-              stagedAssetIds.push(targetSourceAssetId)
+              stagedAssetIds.add(targetSourceAssetId)
+              referenceAssetId = targetSourceAssetId
+            } else {
+              if (state.referenceFile) {
+                referenceAssetId = await storeBinary(state.referenceFile, state.id)
+                stagedAssetIds.add(referenceAssetId)
+              }
+              if (
+                state.targetMode === 'isolated-vocal' &&
+                state.targetSourceFile &&
+                targetSourceAssetId
+              ) {
+                await storeBinary(
+                  state.targetSourceFile,
+                  state.id,
+                  targetSourceAssetId,
+                  state.targetSourceMimeType ?? undefined,
+                )
+                stagedAssetIds.add(targetSourceAssetId)
+              }
             }
             const now = new Date().toISOString()
             const project = appProjectSchema.parse({
@@ -638,7 +1015,7 @@ function SetupRoute() {
             await requestPersistentStorageAfterExplicitSave().catch(() => false)
             void navigate(`/practice/${project.id}`)
           } catch (error) {
-            await deleteBinaryAssets(stagedAssetIds).catch(() => undefined)
+            await deleteBinaryAssets([...stagedAssetIds]).catch(() => undefined)
             throw error
           }
         })().catch((error: unknown) => {

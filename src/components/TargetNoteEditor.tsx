@@ -1,3 +1,4 @@
+import { midiNoteName } from '../domain/pitch'
 import { ExactTimeInput } from './ExactTimeInput'
 import { TouchPianoRoll } from './TouchPianoRoll'
 
@@ -11,12 +12,26 @@ export interface EditableTargetNote {
 
 export interface TargetNoteEditorProps {
   readonly notes: readonly EditableTargetNote[]
+  readonly transpositionSemitones?: number | undefined
   readonly onChange: (note: EditableTargetNote) => void
   readonly onAdd: () => void
   readonly onRemove: (id: string) => void
 }
 
-export function TargetNoteEditor({ notes, onChange, onAdd, onRemove }: TargetNoteEditorProps) {
+function pianoNoteName(midiNote: number, transpositionSemitones: number): string {
+  if (!Number.isInteger(midiNote) || !Number.isInteger(transpositionSemitones)) return '—'
+  return midiNoteName(midiNote + transpositionSemitones) ?? '—'
+}
+
+export function TargetNoteEditor({
+  notes,
+  transpositionSemitones = 0,
+  onChange,
+  onAdd,
+  onRemove,
+}: TargetNoteEditorProps) {
+  const pianoNotes = notes.map((note) => pianoNoteName(note.midiNote, transpositionSemitones))
+
   return (
     <section aria-labelledby="target-note-heading">
       <div className="ss-section-heading">
@@ -28,11 +43,20 @@ export function TargetNoteEditor({ notes, onChange, onAdd, onRemove }: TargetNot
           Add note
         </button>
       </div>
+      {pianoNotes.length > 0 ? (
+        <p aria-label="Piano note sequence">
+          <strong>Piano notes after transpose:</strong> {pianoNotes.join(' · ')}
+        </p>
+      ) : null}
       <TouchPianoRoll notes={notes} onChange={onChange} />
       <ol className="ss-note-list">
         {notes.map((note, index) => (
           <li key={note.id}>
             <strong>Note {index + 1}</strong>
+            <p>
+              <strong>Piano note after transpose:</strong>{' '}
+              <output aria-label={`Piano note ${index + 1}`}>{pianoNotes[index]}</output>
+            </p>
             <div className="ss-field-grid">
               <ExactTimeInput
                 label="Start"

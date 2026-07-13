@@ -1,6 +1,6 @@
 # SingScope
 
-SingScope is a private, local-first singing practice PWA. It aligns an editable target melody with backing audio, live monophonic pitch detection, microphone takes, transparent review metrics, and coach-ready exports. No recording or analysis is uploaded.
+SingScope is a private, local-first singing practice PWA. It aligns an editable target melody with backing audio, live monophonic pitch detection, microphone takes, transparent review metrics, and coach-ready exports. A target melody can come from MIDI, manual entry, uploaded monophonic audio, or a short melody recorded directly in setup. No recording or analysis is uploaded.
 
 The acceptance target is an iPhone on the current public iOS release ([initial target: iOS 26.5.2](https://support.apple.com/en-us/127594)), with the installed Home Screen web app as the preferred experience. Older iOS releases and non-iPhone platforms are best-effort secondary targets, not formal acceptance platforms. Automated WebKit and iOS Simulator checks are useful compatibility gates, but **do not count as physical-iPhone acceptance**.
 
@@ -41,7 +41,7 @@ The static Pages build is emitted to `dist/`. After `pnpm build:pages`, run `pnp
 
 For a new user, install from Safari with **Share → Add to Home Screen** before creating the first project. Safari and an installed Home Screen web app can use separate IndexedDB/OPFS stores. To move an existing Safari-mode project, export a project backup in Safari, install/open SingScope from the Home Screen, then import that backup there.
 
-Projects, imported audio, microphone takes, and analysis stay in the selected browser/app container. Uninstalling the Home Screen app, clearing website data, or iOS storage pressure can remove them. SingScope asks for a backup after the first successful take; backups remain the user's responsibility.
+Projects, imported audio, locally recorded melody sources, microphone takes, and analysis stay in the selected browser/app container. Uninstalling the Home Screen app, clearing website data, or iOS storage pressure can remove them. SingScope asks for a backup after the first successful take; backups remain the user's responsibility.
 
 Use wired or USB-C headphones for the most predictable playback/capture route. AirPods and speaker-only use are compatibility modes because iPhone may reroute or duck audio during capture.
 
@@ -49,8 +49,11 @@ Use wired or USB-C headphones for the most predictable playback/capture route. A
 
 - Standard MIDI format 0/1 with PPQN timing: supported and authoritative after track selection.
 - Touch/manual note editing: supported and authoritative after edits.
-- Isolated monophonic vocal/instrument analysis: assisted estimate; always editable.
-- Mixed mastered-song vocal isolation: not implemented. A backing track is not claimed to contain an extracted melody.
+- Uploaded isolated monophonic vocal/instrument analysis: assisted estimate; always editable.
+- Local **Record melody** capture: sing, hum, whistle, or play one note at a time on a single-note instrument. Analysis stays on the device and produces editable piano-note names and timings.
+- Chord, polyphonic, and mixed mastered-song transcription or vocal isolation: not implemented. A backing track is not claimed to contain an extracted melody.
+
+Direct melody recording is foreground-only. If Safari or the Home Screen app is interrupted, capture stops and never auto-resumes; review the partial source if offered or record it again.
 
 ## Privacy and hosting
 
