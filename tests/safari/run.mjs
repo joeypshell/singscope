@@ -33,12 +33,29 @@ try {
   assert.equal(support.canvas, true)
   assert.ok(support.recorderTypes.length >= 1)
 
+  const dismissButtons = await driver.findElements(
+    By.xpath("//button[normalize-space()='Dismiss']"),
+  )
+  if (dismissButtons[0] && (await dismissButtons[0].isDisplayed())) {
+    await dismissButtons[0].click()
+  }
+
   const continueButtons = await driver.findElements(
     By.xpath("//button[normalize-space()='Continue']"),
   )
   if (continueButtons[0]) {
     await driver.wait(until.elementIsEnabled(continueButtons[0]), 20_000)
+    await driver.executeScript(
+      (element) => element.scrollIntoView({ block: 'center' }),
+      continueButtons[0],
+    )
     await continueButtons[0].click()
+    await driver.wait(
+      async () =>
+        (await driver.executeScript(() => localStorage.getItem('singscope:onboarding:v1'))) ===
+        'complete',
+      10_000,
+    )
   }
 
   const demoButton = await driver.wait(
@@ -70,6 +87,13 @@ try {
   await driver.navigate().refresh()
   const reloadedCanvas = await driver.wait(until.elementLocated(By.css('canvas')), 10_000)
   assert.equal(await reloadedCanvas.isDisplayed(), true)
+} catch (error) {
+  const body = await driver
+    .findElement(By.css('body'))
+    .getText()
+    .catch(() => 'Body unavailable')
+  console.error(`Safari smoke body at failure:\n${body.slice(0, 4_000)}`)
+  throw error
 } finally {
   await driver.quit()
 }
