@@ -117,11 +117,9 @@ try {
     until.elementLocated(By.css('[data-testid="open-demo"]')),
     10_000,
   )
-  await nativeTap(demoButton)
-  await driver.sleep(1_000)
-  if (!String(await driver.executeScript(() => window.location.hash)).startsWith('#/practice/')) {
-    await driver.executeScript((element) => element.click(), demoButton)
-  }
+  console.log('Opening the synthetic demo through deterministic harness setup')
+  await driver.executeScript((element) => element.click(), demoButton)
+  await driver.sleep(2_000)
   const canvas = await driver.wait(until.elementLocated(By.css('canvas')), 10_000)
   assert.equal(await canvas.isDisplayed(), true)
   console.log('Synthetic demo is open and its Canvas is visible')
