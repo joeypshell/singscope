@@ -102,7 +102,6 @@ jobs:
       - name: Run SafariDriver production smoke
         env:
           SINGSCOPE_TEST_URL: http://127.0.0.1:4173/singscope/
-          IOS_PLATFORM_VERSION: '26.4'
         run: |
           pnpm preview:pages --host 127.0.0.1 > /tmp/singscope-preview.log 2>&1 &
           PREVIEW_PID=$!
@@ -199,7 +198,6 @@ jobs:
       - name: Smoke deployed Pages build in Simulator Safari
         env:
           SINGSCOPE_TEST_URL: https://joeypshell.github.io/singscope/
-          IOS_PLATFORM_VERSION: '26.4'
         run: |
           for attempt in {1..30}; do curl -fsS "$SINGSCOPE_TEST_URL" >/dev/null && break; sleep 2; done
           sudo safaridriver --enable

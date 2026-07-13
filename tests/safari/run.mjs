@@ -4,11 +4,8 @@ import { Browser, Builder, By, until } from 'selenium-webdriver'
 const url = process.env.SINGSCOPE_TEST_URL ?? 'http://127.0.0.1:4173'
 const capabilities = {
   browserName: Browser.SAFARI,
-  platformName: 'iOS',
+  platformName: 'ios',
   'safari:useSimulator': true,
-  'safari:deviceType': 'iPhone',
-  'safari:deviceName': 'iPhone 17',
-  'safari:platformVersion': process.env.IOS_PLATFORM_VERSION ?? '26.4',
   ...(process.env.IOS_DEVICE_UDID ? { 'safari:deviceUDID': process.env.IOS_DEVICE_UDID } : {}),
 }
 
