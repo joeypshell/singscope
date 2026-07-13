@@ -1,0 +1,103 @@
+import { z } from 'zod'
+
+const id = z.uuid()
+const finite = z.number()
+const time = finite.nonnegative().max(7_200)
+const utc = z.iso.datetime({ offset: true })
+
+const note = z
+  .object({
+    id,
+    startSeconds: time,
+    endSeconds: time,
+    midiNote: finite.int().min(0).max(127),
+    lyric: z.string().max(120),
+    scorable: z.boolean(),
+  })
+  .refine((value) => value.endSeconds > value.startSeconds, 'Note end must follow its start.')
+
+const loop = z
+  .object({
+    id,
+    name: z.string().min(1).max(120),
+    startSeconds: time,
+    endSeconds: time,
+    repetitions: z.number().int().min(1).max(50),
+    enabled: z.boolean(),
+  })
+  .refine((value) => value.endSeconds > value.startSeconds, 'Loop end must follow its start.')
+
+const pitchPoint = z.object({
+  timeSeconds: time,
+  contextTimeSeconds: time,
+  candidateHz: finite.positive().max(20_000).nullable(),
+  frequencyHz: finite.positive().max(20_000).nullable(),
+  midiNote: finite.min(-20).max(160).nullable(),
+  confidence: finite.min(0).max(1).nullable(),
+  rms: finite.min(0).max(1),
+  peak: finite.min(0).max(1),
+  gapReason: z.string().max(80).nullable(),
+  detectorVersion: z.string().min(1).max(80),
+})
+
+const targetPitchPoint = z.object({
+  timeSeconds: time,
+  frequencyHz: finite.positive().max(20_000).nullable(),
+  midiNote: finite.min(-20).max(160).nullable(),
+  confidence: finite.min(0).max(1).nullable(),
+})
+
+const take = z.object({
+  id,
+  createdAt: utc,
+  label: z.string().min(1).max(120),
+  durationSeconds: time.max(900),
+  audioAssetId: id.nullable(),
+  audioMimeType: z.string().max(255).nullable(),
+  partialReason: z.string().max(120).nullable(),
+  points: z.array(pitchPoint).max(500_000),
+})
+
+export const appProjectSchema = z
+  .object({
+    id,
+    schemaVersion: z.literal(1),
+    title: z.string().min(1).max(120),
+    createdAt: utc,
+    updatedAt: utc,
+    referenceName: z.string().max(255).nullable(),
+    referenceAssetId: id.nullable(),
+    referenceMimeType: z.string().max(255).nullable(),
+    referenceDurationSeconds: time.max(1_200),
+    isSyntheticDemo: z.boolean(),
+    targetMode: z.enum(['midi', 'manual', 'isolated-vocal']),
+    targetStatus: z.string().max(300),
+    targetSourceAssetId: id.nullable(),
+    targetSourceName: z.string().max(255).nullable(),
+    targetSourceMimeType: z.string().max(255).nullable(),
+    targetRevision: z.number().int().positive(),
+    transpositionSemitones: z.number().int().min(-48).max(48),
+    alignmentSeconds: finite.min(-3_600).max(3_600),
+    timingOffsetSeconds: finite.min(-2).max(2),
+    notes: z.array(note).max(100_000),
+    targetPitchPoints: z.array(targetPitchPoint).max(500_000),
+    loops: z.array(loop).max(500),
+    takes: z.array(take).max(1_000),
+    lastBackupAt: utc.nullable(),
+  })
+  .superRefine((project, context) => {
+    const pitchPointCount = project.takes.reduce(
+      (total, currentTake) => total + currentTake.points.length,
+      project.targetPitchPoints.length,
+    )
+    if (pitchPointCount > 500_000) {
+      context.addIssue({
+        code: 'too_big',
+        origin: 'array',
+        maximum: 500_000,
+        inclusive: true,
+        path: ['takes'],
+        message: 'A project can contain at most 500,000 pitch points.',
+      })
+    }
+  })

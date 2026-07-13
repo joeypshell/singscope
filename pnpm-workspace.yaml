@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - '@zip.js/zip.js@2.8.28'
