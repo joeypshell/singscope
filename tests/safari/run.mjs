@@ -10,12 +10,19 @@ const capabilities = {
   ...(process.env.IOS_DEVICE_UDID ? { 'safari:deviceUDID': process.env.IOS_DEVICE_UDID } : {}),
 }
 
-const driver = await new Builder().forBrowser(Browser.SAFARI).withCapabilities(capabilities).build()
+const smokeTimeoutMs = Number(process.env.SAFARI_SMOKE_TIMEOUT_MS ?? 90_000)
+const watchdog = setTimeout(() => {
+  console.error(`Safari smoke exceeded ${smokeTimeoutMs}ms; forcing the CI retry to continue`)
+  process.exit(1)
+}, smokeTimeoutMs)
+
+let driver
 let touchSequence = 0
 
 async function nativeTap(element) {
   await driver.executeScript((target) => target.scrollIntoView({ block: 'center' }), element)
   const touch = new input.Pointer(`singscope-touch-${touchSequence++}`, input.Pointer.Type.TOUCH)
+  console.log(`Sending W3C touch action ${touchSequence}`)
   await driver
     .actions({ async: true })
     .insert(
@@ -25,6 +32,7 @@ async function nativeTap(element) {
       touch.release(input.Button.LEFT),
     )
     .perform()
+  console.log(`Completed W3C touch action ${touchSequence}`)
 }
 
 async function trustedActivate(element, didActivate, label) {
@@ -44,6 +52,9 @@ async function trustedActivate(element, didActivate, label) {
 }
 
 try {
+  console.log(`Creating Simulator Safari session for ${url}`)
+  driver = await new Builder().forBrowser(Browser.SAFARI).withCapabilities(capabilities).build()
+  console.log('Simulator Safari session ready')
   await driver.get(url)
   await driver.wait(until.elementLocated(By.css('h1')), 20_000)
   assert.match(await driver.getTitle(), /SingScope/i)
@@ -65,6 +76,7 @@ try {
   assert.equal(support.indexedDb, true)
   assert.equal(support.canvas, true)
   assert.ok(support.recorderTypes.length >= 1)
+  console.log('Simulator Safari platform capability checks passed')
 
   const dismissButtons = await driver.findElements(
     By.xpath("//button[normalize-space()='Dismiss']"),
@@ -98,6 +110,7 @@ try {
   }
   const canvas = await driver.wait(until.elementLocated(By.css('canvas')), 10_000)
   assert.equal(await canvas.isDisplayed(), true)
+  console.log('Synthetic demo is open and its Canvas is visible')
 
   const startButton = await driver.wait(
     until.elementLocated(By.xpath("//button[normalize-space()='Start']")),
@@ -121,13 +134,19 @@ try {
   await driver.navigate().refresh()
   const reloadedCanvas = await driver.wait(until.elementLocated(By.css('canvas')), 10_000)
   assert.equal(await reloadedCanvas.isDisplayed(), true)
+  console.log('Recorded take reached Review and survived a Safari reload')
 } catch (error) {
-  const body = await driver
-    .findElement(By.css('body'))
-    .getText()
-    .catch(() => 'Body unavailable')
+  const body = driver
+    ? await driver
+        .findElement(By.css('body'))
+        .getText()
+        .catch(() => 'Body unavailable')
+    : 'Safari session unavailable'
   console.error(`Safari smoke body at failure:\n${body.slice(0, 4_000)}`)
   throw error
 } finally {
-  await driver.quit()
+  if (driver) {
+    await driver.quit().catch((error) => console.warn(`SafariDriver quit failed: ${error}`))
+  }
+  clearTimeout(watchdog)
 }
