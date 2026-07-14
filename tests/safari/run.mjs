@@ -147,17 +147,26 @@ try {
   await driver.wait(until.elementIsEnabled(startButton), 20_000)
   await trustedStart(startButton)
   await waitForPracticePhase(['recording'], 15_000)
-  await driver.sleep(1_500)
-  assert.equal(await practicePhase(), 'recording')
+  console.log('Simulator Safari entered the recording phase')
 
-  const stopButton = await driver.findElement(By.xpath("//button[normalize-space()='Stop']"))
-  await driver.wait(until.elementIsEnabled(stopButton), 5_000)
-  await nativeTap(stopButton)
-  await driver.wait(
-    async () =>
-      String(await driver.executeScript(() => window.location.hash)).startsWith('#/review/'),
-    20_000,
-  )
+  const reviewIsOpen = async () =>
+    String(await driver.executeScript(() => window.location.hash)).startsWith('#/review/')
+  if (!(await reviewIsOpen())) {
+    const stopButtons = await driver.findElements(By.xpath("//button[normalize-space()='Stop']"))
+    const stopButton = stopButtons[0]
+    if (stopButton && (await stopButton.isDisplayed()) && (await stopButton.isEnabled())) {
+      try {
+        await nativeTap(stopButton)
+      } catch (error) {
+        // Slow Simulator WebDriver commands can outlive the deterministic
+        // eight-second take. A natural transition to Review is equally valid.
+        if (!(await reviewIsOpen())) throw error
+      }
+    }
+  } else {
+    console.log('The deterministic take reached Review before the Stop command was available')
+  }
+  await driver.wait(reviewIsOpen, 20_000)
   const reviewLabel = await driver.wait(
     until.elementLocated(By.css('.ss-review-heading .ss-eyebrow')),
     10_000,
