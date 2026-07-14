@@ -3,6 +3,8 @@ import { PitchChartCanvas } from '../../components/PitchChartCanvas'
 import { TargetNoteEditor, type EditableTargetNote } from '../../components/TargetNoteEditor'
 import type { PitchChartScene } from '../../rendering/pitch-chart'
 import { RecordedMelodyControl, type RecordedMelodyView } from './RecordedMelodyControl'
+import { AnalysisDebugPanel } from './AnalysisDebugPanel'
+import type { AnalysisDebugRouteCategory, AnalysisDebugView } from '../../app/types'
 
 export type { RecordedMelodyPhase, RecordedMelodyView } from './RecordedMelodyControl'
 
@@ -29,6 +31,7 @@ export interface ProjectSetupView {
   readonly recordedMelody?: RecordedMelodyView | undefined
   readonly analysisScene?: PitchChartScene | undefined
   readonly analysisSourceUrl?: string | null | undefined
+  readonly analysisDebug?: AnalysisDebugView | undefined
 }
 
 export interface ProjectSetupScreenProps {
@@ -51,6 +54,12 @@ export interface ProjectSetupScreenProps {
   readonly onAddNote: () => void
   readonly onRemoveNote: (id: string) => void
   readonly onSave: () => void
+  readonly onAnalysisDebugExpectedNoteCountChange?: ((count: number | null) => void) | undefined
+  readonly onAnalysisDebugIssueDescriptionChange?: ((description: string) => void) | undefined
+  readonly onAnalysisDebugRouteCategoryChange?:
+    ((route: AnalysisDebugRouteCategory) => void) | undefined
+  readonly onPrepareAnalysisDebug?: (() => void) | undefined
+  readonly onShareAnalysisDebug?: (() => void) | undefined
 }
 
 function SelectedFile({ label, name }: { readonly label: string; readonly name: string | null }) {
@@ -81,6 +90,11 @@ export function ProjectSetupScreen({
   onAddNote,
   onRemoveNote,
   onSave,
+  onAnalysisDebugExpectedNoteCountChange,
+  onAnalysisDebugIssueDescriptionChange,
+  onAnalysisDebugRouteCategoryChange,
+  onPrepareAnalysisDebug,
+  onShareAnalysisDebug,
 }: ProjectSetupScreenProps) {
   const recordedMelodyAvailable =
     model.recordedMelody !== undefined &&
@@ -246,6 +260,21 @@ export function ProjectSetupScreen({
                 Hatched spans can still contain a rejected raw candidate. The editable note list
                 below is authoritative for scoring.
               </p>
+              {model.analysisDebug &&
+              onAnalysisDebugExpectedNoteCountChange &&
+              onAnalysisDebugIssueDescriptionChange &&
+              onAnalysisDebugRouteCategoryChange &&
+              onPrepareAnalysisDebug &&
+              onShareAnalysisDebug ? (
+                <AnalysisDebugPanel
+                  model={model.analysisDebug}
+                  onExpectedNoteCountChange={onAnalysisDebugExpectedNoteCountChange}
+                  onIssueDescriptionChange={onAnalysisDebugIssueDescriptionChange}
+                  onRouteCategoryChange={onAnalysisDebugRouteCategoryChange}
+                  onPrepare={onPrepareAnalysisDebug}
+                  onShareOrSave={onShareAnalysisDebug}
+                />
+              ) : null}
             </section>
           ) : null}
           <div className="ss-field-grid">

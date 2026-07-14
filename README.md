@@ -57,9 +57,15 @@ Direct melody recording is foreground-only. If Safari or the Home Screen app is 
 
 After local analysis, **Check what SingScope heard** plays the exact source and overlays the accepted pitch contour with editable piano-note estimates. The chart auto-ranges across the detected/target notes, and the visible edited note list—not a hidden contour—is authoritative for scoring.
 
+### Reporting a missed-note analysis bug
+
+Immediately after analyzing a newly recorded or uploaded source, open **Help diagnose a missed-note bug**. Enter the number of notes you played, choose the microphone route, and briefly describe the mismatch. Tap **1. Prepare debug package**, then make a separate **2. Share / Save** tap and attach `singscope-analysis-debug.zip` to the bug report.
+
+Preparation is local and does not upload anything. The ZIP deliberately contains the exact analyzed audio, every accepted/rejected detector frame and gap reason, estimated-note segmentation, detector/build settings, applied capture settings, and Safari user-agent/viewport details. It excludes the project title, original filename, microphone name/ID, lyrics, unrelated projects, and storage identifiers. Attaching the ZIP to ChatGPT, email, or another destination uploads it to that recipient, so share it only where intended.
+
 ## Privacy and hosting
 
-All runtime code and assets are bundled. There is no analytics, telemetry, account, cloud backend, external AI, upload API, CDN, or streaming-service integration. Normal app-shell requests reach GitHub Pages and may be logged by GitHub. Recordings are never requested by or sent to the application host.
+All runtime code and assets are bundled. There is no analytics, telemetry, account, cloud backend, external AI, upload API, CDN, or streaming-service integration. Normal app-shell requests reach GitHub Pages and may be logged by GitHub. Recordings are never requested by or sent to the application host; a user can explicitly share a locally prepared diagnostic ZIP with a destination they choose.
 
 GitHub Pages cannot set `Permissions-Policy` or CSP `frame-ancestors` response headers. The production document has a strict meta CSP, but a dedicated header-capable origin is the recommended future hardening path.
 

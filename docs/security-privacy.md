@@ -29,6 +29,7 @@ Trust boundaries are the local-file importer, microphone and device APIs, browse
 - imported backing/reference audio that may be copyrighted;
 - device labels, sample-rate/constraint settings, and calibration offsets;
 - backup and feedback archives once saved outside browser storage.
+- opt-in analysis-debug archives containing the exact analyzed audio, full raw detector evidence, capture settings, and browser user-agent/viewport metadata.
 
 ## Abuse cases and mitigations
 
@@ -41,6 +42,7 @@ Trust boundaries are the local-file importer, microphone and device APIs, browse
 | Recording without clear intent                                        | Explicit microphone grant and Start/Record taps, persistent non-color recording indicator, foreground-only capture, interruption disclosure, and no auto-resume.                   |
 | Partial or corrupt take after interruption                            | One-second temporary chunks, journal/commit state, hash/length/MIME commit, recoverable partial finalization, startup orphan cleanup.                                              |
 | Accidental reference redistribution                                   | Reference audio excluded by default; explicit rights warning and package-size checks before opt-in.                                                                                |
+| Accidental diagnostic-audio disclosure                                | Two separate Prepare and Share/Save gestures, explicit exact-audio/recipient warning, fixed 16 MiB package bound, sanitized metadata, and no application upload endpoint.          |
 | Cross-project-site origin collision                                   | `singscope`-namespaced IndexedDB, OPFS paths, caches, events, and download names.                                                                                                  |
 | Stale vulnerable dependency                                           | Exact direct versions, committed pnpm lockfile, Dependabot, production-dependency audit in CI, no remote runtime assets.                                                           |
 | User assumes “local” means durable                                    | Onboarding, storage/backup health, first-take backup prompt, and explicit deletion/storage-pressure warnings.                                                                      |

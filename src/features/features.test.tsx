@@ -1,9 +1,10 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TargetNoteEditor } from '../components/TargetNoteEditor'
 import { ReviewScreen, type ReviewView } from './review/ReviewScreen'
 import { RecordedMelodyControl, type RecordedMelodyView } from './setup/RecordedMelodyControl'
+import { AnalysisDebugPanel } from './setup/AnalysisDebugPanel'
 import { ProjectSetupScreen } from './setup/ProjectSetupScreen'
 import { DashboardScreen } from './dashboard/DashboardScreen'
 
@@ -84,6 +85,10 @@ describe('project setup', () => {
   it('offers local recorded-melody acquisition inside the analyzed-audio target mode', async () => {
     const onStart = vi.fn()
     const onUseAsReference = vi.fn()
+    const onExpectedNoteCount = vi.fn()
+    const onIssueDescription = vi.fn()
+    const onPrepareDebug = vi.fn()
+    const onRouteCategory = vi.fn()
     render(
       <ProjectSetupScreen
         model={{
@@ -107,6 +112,14 @@ describe('project setup', () => {
             hasRecordedSource: false,
           },
           analysisSourceUrl: 'blob:recorded-source',
+          analysisDebug: {
+            phase: 'idle',
+            packageSizeLabel: null,
+            errorMessage: null,
+            expectedNoteCount: null,
+            issueDescription: '',
+            routeCategory: 'unknown',
+          },
           analysisScene: {
             viewport: { startSeconds: 0, endSeconds: 2, minMidi: 58, maxMidi: 70 },
             targets: [{ startSeconds: 0, endSeconds: 1, frequencyHz: 293.66, label: 'D4' }],
@@ -127,6 +140,11 @@ describe('project setup', () => {
         onRecordMelodyAgain={vi.fn()}
         useRecordedSourceAsReference={false}
         onUseRecordedSourceAsReferenceChange={onUseAsReference}
+        onAnalysisDebugExpectedNoteCountChange={onExpectedNoteCount}
+        onAnalysisDebugIssueDescriptionChange={onIssueDescription}
+        onAnalysisDebugRouteCategoryChange={onRouteCategory}
+        onPrepareAnalysisDebug={onPrepareDebug}
+        onShareAnalysisDebug={vi.fn()}
         onTranspositionChange={vi.fn()}
         onAlignmentChange={vi.fn()}
         onNoteChange={vi.fn()}
@@ -161,6 +179,58 @@ describe('project setup', () => {
     expect(within(verifier).getByText('Raw candidates')).toBeInTheDocument()
     expect(within(verifier).getByText(/stores accepted pitch, raw candidates/)).toBeInTheDocument()
     expect(within(verifier).getByText(/note list below is authoritative/)).toBeInTheDocument()
+    expect(within(verifier).getByText(/exact analyzed source audio/)).toBeInTheDocument()
+    await userEvent.type(
+      within(verifier).getByLabelText('Number of notes you played (optional)'),
+      '7',
+    )
+    expect(onExpectedNoteCount).toHaveBeenLastCalledWith(7)
+    await userEvent.selectOptions(within(verifier).getByLabelText('Microphone route'), 'built-in')
+    expect(onRouteCategory).toHaveBeenLastCalledWith('built-in')
+    fireEvent.change(within(verifier).getByLabelText('What went wrong? (optional)'), {
+      target: { value: 'Only four appeared.' },
+    })
+    expect(onIssueDescription).toHaveBeenLastCalledWith('Only four appeared.')
+    await userEvent.click(
+      within(verifier).getByRole('button', { name: '1. Prepare debug package' }),
+    )
+    expect(onPrepareDebug).toHaveBeenCalledOnce()
+  })
+
+  it('requires a separately enabled tap to share a prepared analysis debug package', async () => {
+    const onShare = vi.fn()
+    const base = {
+      packageSizeLabel: '2.4 MiB',
+      errorMessage: null,
+      expectedNoteCount: 7,
+      issueDescription: 'Four notes appeared.',
+      routeCategory: 'built-in',
+    } as const
+    const { rerender } = render(
+      <AnalysisDebugPanel
+        model={{ ...base, phase: 'idle' }}
+        onExpectedNoteCountChange={vi.fn()}
+        onIssueDescriptionChange={vi.fn()}
+        onRouteCategoryChange={vi.fn()}
+        onPrepare={vi.fn()}
+        onShareOrSave={onShare}
+      />,
+    )
+    expect(screen.getByRole('button', { name: /2\. Share \/ Save/ })).toBeDisabled()
+    expect(screen.getByText(/Nothing is uploaded or shared unless/)).toBeInTheDocument()
+
+    rerender(
+      <AnalysisDebugPanel
+        model={{ ...base, phase: 'ready' }}
+        onExpectedNoteCountChange={vi.fn()}
+        onIssueDescriptionChange={vi.fn()}
+        onRouteCategoryChange={vi.fn()}
+        onPrepare={vi.fn()}
+        onShareOrSave={onShare}
+      />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: '2. Share / Save · 2.4 MiB' }))
+    expect(onShare).toHaveBeenCalledOnce()
   })
 
   it('shows recording status, elapsed context time, applied settings, and stop', async () => {

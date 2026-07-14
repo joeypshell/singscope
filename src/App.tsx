@@ -5,10 +5,16 @@ import {
   analyzeMonophonicAudioBuffer,
   createAnalyzedTargetDraftInput,
   decideMonophonicAnalysisStrategy,
+  DEFAULT_CANDIDATE_SEGMENTATION_OPTIONS,
+  YinPitchDetector,
+  type CandidateSegmentationOptions,
+  type MonophonicAnalysisResult,
+  type PitchDetectorConfig,
 } from './audio/dsp'
 import {
   RecordedSourceCapture,
   type CaptureSettings,
+  type RecordingInterruption,
   type RecordedSourceResult,
   type RecordedSourceSnapshot,
 } from './audio/runtime'
@@ -44,7 +50,13 @@ import {
 } from './app/files'
 import { appProjectSchema } from './app/project-schema'
 import { useAppStore } from './app/store'
-import type { AppProject, AppTargetNote, AppTargetPitchPoint } from './app/types'
+import type {
+  AnalysisDebugRouteCategory,
+  AnalysisDebugView,
+  AppProject,
+  AppTargetNote,
+  AppTargetPitchPoint,
+} from './app/types'
 import { currentPitchLabel, usePracticeController } from './app/use-practice-controller'
 import { useReviewController } from './app/use-review-controller'
 import {
@@ -55,6 +67,20 @@ import {
   takeMetrics,
   targetAnalysisScene,
 } from './app/view-models'
+import {
+  canSharePreparedPackage,
+  debugAudioExtensionForMimeType,
+  discardPreparedExport,
+  ExportPreparer,
+  materializePreparedExport,
+  pruneExportScratch,
+  savePreparedPackage,
+  sharePreparedPackage,
+  type AnalysisDebugPackageInput,
+  type AnalysisDebugDisplayMode,
+  type PreparedExportHandle,
+  type PreparedPackage,
+} from './export'
 
 const ONBOARDING_KEY = 'singscope:onboarding:v1'
 
@@ -64,6 +90,29 @@ function installedDisplayMode(): boolean {
     window.matchMedia('(display-mode: standalone)').matches ||
     standaloneNavigator.standalone === true
   )
+}
+
+function analysisDebugDisplayMode(): AnalysisDebugDisplayMode {
+  const standaloneNavigator = navigator as Navigator & { standalone?: boolean }
+  if (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    standaloneNavigator.standalone === true
+  ) {
+    return 'standalone'
+  }
+  if (window.matchMedia('(display-mode: fullscreen)').matches) return 'fullscreen'
+  if (window.matchMedia('(display-mode: minimal-ui)').matches) return 'minimal-ui'
+  return 'browser'
+}
+
+function packageSizeLabel(byteLength: number): string {
+  const mebibytes = byteLength / (1024 * 1024)
+  if (mebibytes >= 1) return `${mebibytes.toFixed(1)} MiB`
+  return `${Math.max(1, Math.ceil(byteLength / 1024)).toString()} KiB`
+}
+
+function shareWasCancelled(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
 }
 
 function asMessage(error: unknown): string {
@@ -274,9 +323,35 @@ interface SetupState {
   readonly midiTracks: readonly MidiTrackView[]
   readonly selectedMidiTrackId: string | null
   readonly targetRevision: number
+  readonly analysisDebugDraft: AnalysisDebugDraft | null
   readonly existing: AppProject | null
   readonly busy: boolean
   readonly error: string | null
+}
+
+interface AnalysisDebugDraft {
+  readonly analysis: MonophonicAnalysisResult
+  readonly detectorConfig: PitchDetectorConfig
+  readonly segmentationConfig: CandidateSegmentationOptions
+  readonly decodedSampleRateHz: number
+  readonly decodedChannelCount: number
+  readonly recorderDurationSeconds: number | null
+  readonly captureSettings: CaptureSettings | null
+  readonly partialReason: RecordingInterruption | null
+}
+
+interface PreparedAnalysisDebug {
+  readonly handle: PreparedExportHandle
+  readonly packageValue: PreparedPackage
+}
+
+const INITIAL_ANALYSIS_DEBUG: AnalysisDebugView = {
+  phase: 'idle',
+  packageSizeLabel: null,
+  errorMessage: null,
+  expectedNoteCount: null,
+  issueDescription: '',
+  routeCategory: 'unknown',
 }
 
 function inferredTargetSourceDuration(project: AppProject): number {
@@ -320,6 +395,9 @@ function initialSetup(project: AppProject | null): SetupState {
     midiTracks: [],
     selectedMidiTrackId: null,
     targetRevision: project?.targetRevision ?? 0,
+    // Persisted analyses intentionally do not recreate a debug draft: the exact
+    // raw result and source bytes must both still be present in this setup route.
+    analysisDebugDraft: null,
     existing: project,
     busy: false,
     error: null,
@@ -351,6 +429,11 @@ interface AnalyzedSource {
   readonly targetRevision: number
   readonly notes: readonly AppTargetNote[]
   readonly pitchPoints: readonly AppTargetPitchPoint[]
+  readonly analysis: MonophonicAnalysisResult
+  readonly detectorConfig: PitchDetectorConfig
+  readonly segmentationConfig: CandidateSegmentationOptions
+  readonly decodedSampleRateHz: number
+  readonly decodedChannelCount: number
 }
 
 async function analyzeMonophonicSourceFile(
@@ -384,7 +467,18 @@ async function analyzeMonophonicSourceFile(
         'Decoded audio exceeds the whole-file memory budget; use a shorter monophonic source.',
       )
     }
-    const analysis = await analyzeMonophonicAudioBuffer(buffer, { admission })
+    const detector = new YinPitchDetector()
+    const segmentationConfig: CandidateSegmentationOptions = Object.freeze({
+      ...DEFAULT_CANDIDATE_SEGMENTATION_OPTIONS,
+      confidenceThreshold: detector.config.confidenceThreshold,
+      analysisHopSeconds: detector.config.hopDurationSeconds,
+      analysisFrameSeconds: detector.config.frameDurationSeconds,
+    })
+    const analysis = await analyzeMonophonicAudioBuffer(buffer, {
+      admission,
+      detector,
+      segmentation: segmentationConfig,
+    })
     const sourceAssetId = crypto.randomUUID()
     const draft = createAnalyzedTargetDraftInput(analysis, {
       sourceAssetId,
@@ -417,6 +511,11 @@ async function analyzeMonophonicSourceFile(
       // Editable notes come from accepted segmentation, while pitchPoints retain
       // every raw detector candidate and normalized analysis-gap reason.
       pitchPoints: draft.pitchPoints,
+      analysis,
+      detectorConfig: detector.config,
+      segmentationConfig,
+      decodedSampleRateHz: buffer.sampleRate,
+      decodedChannelCount: buffer.numberOfChannels,
     }
   } finally {
     await context.close()
@@ -541,6 +640,10 @@ function SetupRoute() {
   const recordedCaptureUnsubscribeRef = useRef<(() => void) | null>(null)
   const recordedCaptureGenerationRef = useRef(0)
   const [analysisSourceUrl, setAnalysisSourceUrl] = useState<string | null>(null)
+  const [analysisDebug, setAnalysisDebug] = useState<AnalysisDebugView>(INITIAL_ANALYSIS_DEBUG)
+  const preparedAnalysisDebugRef = useRef<PreparedAnalysisDebug | null>(null)
+  const analysisDebugPreparerRef = useRef<ExportPreparer | null>(null)
+  const analysisDebugGenerationRef = useRef(0)
   useEffect(() => {
     stateRef.current = state
   }, [state])
@@ -574,13 +677,33 @@ function SetupRoute() {
   const patch = (value: Partial<SetupState>) => setState((current) => ({ ...current, ...value }))
   const validation = setupValidation(state)
 
+  const releasePreparedAnalysisDebug = useCallback(() => {
+    analysisDebugGenerationRef.current += 1
+    analysisDebugPreparerRef.current?.terminate()
+    analysisDebugPreparerRef.current = null
+    const prepared = preparedAnalysisDebugRef.current
+    preparedAnalysisDebugRef.current = null
+    if (prepared) void discardPreparedExport(prepared.handle).catch(() => undefined)
+  }, [])
+
+  const invalidateAnalysisDebug = useCallback(() => {
+    releasePreparedAnalysisDebug()
+    setAnalysisDebug((current) => ({
+      ...INITIAL_ANALYSIS_DEBUG,
+      expectedNoteCount: current.expectedNoteCount,
+      issueDescription: current.issueDescription,
+    }))
+  }, [releasePreparedAnalysisDebug])
+
   const applyAnalyzedSource = useCallback(
     async (
       file: File,
       origin: 'upload' | 'recording',
       partialReason: RecordedSourceResult['partialReason'] = null,
+      captureMetadata: Pick<RecordedSourceResult, 'durationSeconds' | 'settings'> | null = null,
     ) => {
       const analyzed = await analyzeMonophonicSourceFile(file, stateRef.current.existing)
+      invalidateAnalysisDebug()
       const useAsReference = useRecordedSourceAsReferenceRef.current
       const sourceDescription = origin === 'recording' ? 'from your recording' : 'in a new draft'
       const interruptionMessage = partialReason
@@ -599,6 +722,16 @@ function SetupRoute() {
         targetRevision: analyzed.targetRevision,
         notes: analyzed.notes,
         targetPitchPoints: analyzed.pitchPoints,
+        analysisDebugDraft: {
+          analysis: analyzed.analysis,
+          detectorConfig: analyzed.detectorConfig,
+          segmentationConfig: analyzed.segmentationConfig,
+          decodedSampleRateHz: analyzed.decodedSampleRateHz,
+          decodedChannelCount: analyzed.decodedChannelCount,
+          recorderDurationSeconds: captureMetadata?.durationSeconds ?? null,
+          captureSettings: captureMetadata?.settings ?? null,
+          partialReason,
+        },
         targetStatus: `${analyzed.notes.length} estimated notes ${sourceDescription}. Review the piano note names, timing, and MIDI values before saving.${interruptionMessage}`,
         ...(useAsReference
           ? {
@@ -612,7 +745,7 @@ function SetupRoute() {
       }))
       return analyzed
     },
-    [],
+    [invalidateAnalysisDebug],
   )
 
   const releaseRecordedCapture = useCallback((capture: RecordedSourceCapture) => {
@@ -633,6 +766,7 @@ function SetupRoute() {
       return
     }
     if (recordedCaptureRef.current) return
+    invalidateAnalysisDebug()
 
     const generation = ++recordedCaptureGenerationRef.current
     const capture = new RecordedSourceCapture()
@@ -648,6 +782,7 @@ function SetupRoute() {
       ...value,
       busy: true,
       error: null,
+      analysisDebugDraft: null,
       targetStatus: 'Requesting microphone access on this device…',
     }))
 
@@ -695,7 +830,10 @@ function SetupRoute() {
           lastModified: Date.now(),
         })
         try {
-          await applyAnalyzedSource(file, 'recording', result.partialReason)
+          await applyAnalyzedSource(file, 'recording', result.partialReason, {
+            durationSeconds: result.durationSeconds,
+            settings: result.settings,
+          })
           if (generation !== recordedCaptureGenerationRef.current) return
           setRecordedMelody((value) => ({
             ...value,
@@ -761,7 +899,12 @@ function SetupRoute() {
         targetStatus: 'Microphone recording did not start.',
       }))
     })
-  }, [applyAnalyzedSource, recordedMelody.hasRecordedSource, releaseRecordedCapture])
+  }, [
+    applyAnalyzedSource,
+    invalidateAnalysisDebug,
+    recordedMelody.hasRecordedSource,
+    releaseRecordedCapture,
+  ])
 
   useEffect(
     () => () => {
@@ -773,6 +916,194 @@ function SetupRoute() {
       if (capture) void capture.discard().catch(() => undefined)
     },
     [],
+  )
+
+  useEffect(
+    () => () => {
+      releasePreparedAnalysisDebug()
+    },
+    [releasePreparedAnalysisDebug],
+  )
+
+  const prepareAnalysisDebug = useCallback(() => {
+    const current = stateRef.current
+    const draft = current.analysisDebugDraft
+    const source = current.targetSourceFile
+    if (!draft || !source) {
+      setAnalysisDebug((value) => ({
+        ...value,
+        phase: 'error',
+        packageSizeLabel: null,
+        errorMessage: 'Record or upload and analyze a new source before preparing diagnostics.',
+      }))
+      return
+    }
+    const extension = debugAudioExtensionForMimeType(current.targetSourceMimeType ?? source.type)
+    if (!extension) {
+      setAnalysisDebug((value) => ({
+        ...value,
+        phase: 'error',
+        packageSizeLabel: null,
+        errorMessage:
+          'This source audio format cannot be placed in a safe debug package. Record again on this device or use AAC, M4A, MP3, MP4, WebM, or WAV.',
+      }))
+      return
+    }
+
+    releasePreparedAnalysisDebug()
+    const generation = analysisDebugGenerationRef.current
+    setAnalysisDebug((value) => ({
+      ...value,
+      phase: 'preparing',
+      packageSizeLabel: null,
+      errorMessage: null,
+    }))
+    const preparer = new ExportPreparer()
+    analysisDebugPreparerRef.current = preparer
+    const appAssetFileName = document.querySelector<HTMLScriptElement>(
+      'script[type="module"][src]',
+    )?.src
+    const input: AnalysisDebugPackageInput = {
+      audio: { blob: source, extension },
+      analysis: draft.analysis,
+      detectorConfig: draft.detectorConfig,
+      segmentationConfig: draft.segmentationConfig,
+      captureMetadata: {
+        recorderDurationSeconds: draft.recorderDurationSeconds,
+        decodedDurationSeconds: draft.analysis.durationSeconds,
+        decodedSampleRateHz: draft.decodedSampleRateHz,
+        decodedChannelCount: draft.decodedChannelCount,
+        settings: draft.captureSettings,
+        partialReason: draft.partialReason,
+        routeCategory: analysisDebug.routeCategory,
+      },
+      browserMetadata: {
+        userAgent: navigator.userAgent,
+        viewportWidthCssPixels: window.innerWidth,
+        viewportHeightCssPixels: window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio,
+        displayMode: analysisDebugDisplayMode(),
+        appAssetFileName: appAssetFileName ?? null,
+      },
+      userReport: {
+        expectedNoteCount: analysisDebug.expectedNoteCount,
+        description: analysisDebug.issueDescription.trim() || null,
+      },
+    }
+
+    void (async () => {
+      let handle: PreparedExportHandle | null = null
+      try {
+        const preparedHandle = await preparer.prepareAnalysisDebug(input)
+        handle = preparedHandle
+        const packageValue = await materializePreparedExport(preparedHandle)
+        if (generation !== analysisDebugGenerationRef.current) {
+          await discardPreparedExport(preparedHandle).catch(() => undefined)
+          return
+        }
+        preparedAnalysisDebugRef.current = { handle: preparedHandle, packageValue }
+        setAnalysisDebug((value) => ({
+          ...value,
+          phase: 'ready',
+          packageSizeLabel: packageSizeLabel(preparedHandle.byteLength),
+          errorMessage: null,
+        }))
+      } catch (error) {
+        if (handle) await discardPreparedExport(handle).catch(() => undefined)
+        if (generation !== analysisDebugGenerationRef.current) return
+        setAnalysisDebug((value) => ({
+          ...value,
+          phase: 'error',
+          packageSizeLabel: null,
+          errorMessage: asMessage(error),
+        }))
+      } finally {
+        preparer.terminate()
+        if (analysisDebugPreparerRef.current === preparer) {
+          analysisDebugPreparerRef.current = null
+        }
+      }
+    })()
+  }, [
+    analysisDebug.expectedNoteCount,
+    analysisDebug.issueDescription,
+    analysisDebug.routeCategory,
+    releasePreparedAnalysisDebug,
+  ])
+
+  const shareAnalysisDebug = useCallback(() => {
+    const prepared = preparedAnalysisDebugRef.current
+    if (!prepared) {
+      setAnalysisDebug((value) => ({
+        ...value,
+        phase: 'error',
+        packageSizeLabel: null,
+        errorMessage: 'Prepare the debug package again before sharing or saving it.',
+      }))
+      return
+    }
+    const generation = analysisDebugGenerationRef.current
+    setAnalysisDebug((value) => ({ ...value, phase: 'sharing', errorMessage: null }))
+    void (async () => {
+      try {
+        if (canSharePreparedPackage(prepared.packageValue)) {
+          await sharePreparedPackage(prepared.packageValue)
+        } else {
+          savePreparedPackage(prepared.packageValue)
+        }
+        if (generation !== analysisDebugGenerationRef.current) return
+        setAnalysisDebug((value) => ({ ...value, phase: 'complete', errorMessage: null }))
+      } catch (error) {
+        if (generation !== analysisDebugGenerationRef.current) return
+        setAnalysisDebug((value) => ({
+          ...value,
+          phase: 'ready',
+          errorMessage: shareWasCancelled(error) ? null : asMessage(error),
+        }))
+      }
+    })()
+  }, [])
+
+  const changeAnalysisDebugExpectedNoteCount = useCallback(
+    (count: number | null) => {
+      releasePreparedAnalysisDebug()
+      setAnalysisDebug((value) => ({
+        ...value,
+        phase: 'idle',
+        packageSizeLabel: null,
+        errorMessage: null,
+        expectedNoteCount: count === null ? null : Math.max(1, Math.min(100, Math.trunc(count))),
+      }))
+    },
+    [releasePreparedAnalysisDebug],
+  )
+
+  const changeAnalysisDebugIssueDescription = useCallback(
+    (description: string) => {
+      releasePreparedAnalysisDebug()
+      setAnalysisDebug((value) => ({
+        ...value,
+        phase: 'idle',
+        packageSizeLabel: null,
+        errorMessage: null,
+        issueDescription: description.slice(0, 500),
+      }))
+    },
+    [releasePreparedAnalysisDebug],
+  )
+
+  const changeAnalysisDebugRouteCategory = useCallback(
+    (routeCategory: AnalysisDebugRouteCategory) => {
+      releasePreparedAnalysisDebug()
+      setAnalysisDebug((value) => ({
+        ...value,
+        phase: 'idle',
+        packageSizeLabel: null,
+        errorMessage: null,
+        routeCategory,
+      }))
+    },
+    [releasePreparedAnalysisDebug],
   )
 
   const selectMidiTrack = useCallback(
@@ -806,6 +1137,7 @@ function SetupRoute() {
         selectedMidiTrackId: state.selectedMidiTrackId,
         recordedMelody,
         analysisSourceUrl,
+        analysisDebug: state.analysisDebugDraft ? analysisDebug : undefined,
         analysisScene:
           state.targetMode === 'isolated-vocal' && state.targetPitchPoints.length > 0
             ? targetAnalysisScene(
@@ -918,6 +1250,11 @@ function SetupRoute() {
         })
       }}
       onRecordMelodyAgain={startRecordedMelody}
+      onAnalysisDebugExpectedNoteCountChange={changeAnalysisDebugExpectedNoteCount}
+      onAnalysisDebugIssueDescriptionChange={changeAnalysisDebugIssueDescription}
+      onAnalysisDebugRouteCategoryChange={changeAnalysisDebugRouteCategory}
+      onPrepareAnalysisDebug={prepareAnalysisDebug}
+      onShareAnalysisDebug={shareAnalysisDebug}
       useRecordedSourceAsReference={useRecordedSourceAsReference}
       onUseRecordedSourceAsReferenceChange={(useAsReference) => {
         setUseRecordedSourceAsReference(useAsReference)
@@ -1359,6 +1696,7 @@ function AppRoutes() {
     startupStarted.current = true
     void (async () => {
       await hydrate()
+      await pruneExportScratch().catch(() => undefined)
       const result = await probeStorage()
       if (!result.indexedDb) {
         setStorageState('failed', result.errors.join(' '))
