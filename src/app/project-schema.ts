@@ -42,9 +42,24 @@ const pitchPoint = z.object({
 
 const targetPitchPoint = z.object({
   timeSeconds: time,
+  candidateHz: finite.positive().max(20_000).nullable().optional(),
   frequencyHz: finite.positive().max(20_000).nullable(),
   midiNote: finite.min(-20).max(160).nullable(),
   confidence: finite.min(0).max(1).nullable(),
+  rms: finite.min(0).nullable().optional(),
+  peak: finite.min(0).nullable().optional(),
+  gapReason: z
+    .enum([
+      'silence',
+      'below-confidence',
+      'out-of-range',
+      'invalid-frame',
+      'timeline-gap',
+      'queue-overflow',
+      'source-gap',
+    ])
+    .nullable()
+    .optional(),
 })
 
 const take = z

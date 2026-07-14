@@ -275,15 +275,21 @@ export function targetAnalysisScene(
     frequencyHz: point.frequencyHz,
     confidence: point.confidence ?? 0,
   }))
+  const raw = project.targetPitchPoints.map((point) => ({
+    timeSeconds: point.timeSeconds,
+    frequencyHz: point.candidateHz ?? null,
+    confidence: point.confidence ?? 0,
+  }))
   const bounds = pitchBounds([
     ...targets.map((target) => target.frequencyHz),
     ...source.map((point) => point.frequencyHz),
+    ...raw.map((point) => point.frequencyHz),
   ])
   return {
     viewport: { startSeconds: 0, endSeconds: Math.max(0.02, durationSeconds), ...bounds },
     targets,
     source,
-    raw: [],
+    raw,
     smoothed: [],
     gaps: targetGapsFrom(project.targetPitchPoints, (seconds) => seconds),
     playheadSeconds: null,

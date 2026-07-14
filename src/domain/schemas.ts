@@ -28,6 +28,23 @@ const utcDateSchema = z.string().refine(isUtcDate, 'Expected a UTC ISO-8601 date
 const finiteSchema = z.number()
 const secondsSchema = finiteSchema.nonnegative()
 const unitSchema = finiteSchema.min(0).max(1)
+const pitchGapReasonSchema = z.enum([
+  'silence',
+  'below-confidence',
+  'out-of-range',
+  'invalid-frame',
+  'timeline-gap',
+  'queue-overflow',
+])
+const targetPitchGapReasonSchema = z.enum([
+  'silence',
+  'below-confidence',
+  'out-of-range',
+  'invalid-frame',
+  'timeline-gap',
+  'queue-overflow',
+  'source-gap',
+])
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/i, 'Expected a SHA-256 hex digest')
 
 export const calibrationSettingsSchema = z
@@ -102,9 +119,13 @@ export const targetNoteSchema = z
 export const targetPitchPointSchema = z
   .object({
     timeSeconds: secondsSchema,
+    candidateHz: finiteSchema.positive().nullable().optional(),
     frequencyHz: finiteSchema.positive().nullable(),
     midiNote: finiteSchema.nullable(),
     confidence: unitSchema.nullable(),
+    rms: finiteSchema.nonnegative().nullable().optional(),
+    peak: finiteSchema.nonnegative().nullable().optional(),
+    gapReason: targetPitchGapReasonSchema.nullable().optional(),
   })
   .strict() satisfies z.ZodType<TargetPitchPoint>
 
@@ -174,16 +195,7 @@ export const detectedPitchPointSchema = z
     confidence: unitSchema.nullable(),
     rms: finiteSchema.nonnegative(),
     peak: finiteSchema.nonnegative(),
-    gapReason: z
-      .enum([
-        'silence',
-        'below-confidence',
-        'out-of-range',
-        'invalid-frame',
-        'timeline-gap',
-        'queue-overflow',
-      ])
-      .nullable(),
+    gapReason: pitchGapReasonSchema.nullable(),
     detectorVersion: z.string().min(1).max(64),
   })
   .strict()

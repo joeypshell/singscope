@@ -1,4 +1,4 @@
-import type { TargetPitchPoint, TargetSet } from '../../domain/types'
+import type { TargetPitchGapReason, TargetPitchPoint, TargetSet } from '../../domain/types'
 import { frequencyToMidi } from '../../domain/pitch'
 import type {
   PitchDetector,
@@ -648,6 +648,12 @@ export interface AnalyzedTargetDraftOptions {
   > | null
 }
 
+function normalizedTargetGapReason(
+  reason: MonophonicContourGapReason,
+): TargetPitchGapReason | null {
+  return reason === 'low-confidence' ? 'below-confidence' : reason
+}
+
 /**
  * Returns creation input only. In particular, it does not mutate or reuse the
  * previous revision's note array, so manual edits cannot be overwritten.
@@ -678,9 +684,13 @@ export function createAnalyzedTargetDraftInput(
     })),
     pitchPoints: analysis.contour.map((point) => ({
       timeSeconds: point.timeSeconds,
+      candidateHz: point.candidateHz,
       frequencyHz: point.frequencyHz,
       midiNote: point.midiNote,
       confidence: point.confidence,
+      rms: point.rms,
+      peak: point.peak,
+      gapReason: normalizedTargetGapReason(point.gapReason),
     })),
     detectorVersion: analysis.detectorVersion,
     contour: analysis.contour.map((point) => ({ ...point })),

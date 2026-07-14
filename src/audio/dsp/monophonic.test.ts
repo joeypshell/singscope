@@ -25,6 +25,51 @@ function sine(sampleRateHz: number, frequencyHz: number, durationSeconds: number
   )
 }
 
+function decayingPianoPhrase(sampleRateHz: number, midiNotes: readonly number[]): Float32Array {
+  const leadSeconds = 2.1
+  const noteSeconds = 0.42
+  const onsetIntervalSeconds = 0.24
+  const tailSeconds = 0.5
+  const totalSeconds =
+    leadSeconds +
+    Math.max(0, midiNotes.length - 1) * onsetIntervalSeconds +
+    noteSeconds +
+    tailSeconds
+  let noiseState = 0x6d2b_79f5
+  const noise = (): number => {
+    noiseState = (Math.imul(noiseState, 1_664_525) + 1_013_904_223) >>> 0
+    return (noiseState / 0xffff_ffff) * 2 - 1
+  }
+  const output = Float32Array.from(
+    { length: Math.round(totalSeconds * sampleRateHz) },
+    () => noise() * 0.0006,
+  )
+
+  for (let noteIndex = 0; noteIndex < midiNotes.length; noteIndex += 1) {
+    const midiNote = midiNotes[noteIndex] ?? 57
+    const frequencyHz = 440 * 2 ** ((midiNote - 69) / 12)
+    const startSample = Math.round((leadSeconds + noteIndex * onsetIntervalSeconds) * sampleRateHz)
+    const noteSamples = Math.round(noteSeconds * sampleRateHz)
+    for (let offset = 0; offset < noteSamples; offset += 1) {
+      const time = offset / sampleRateHz
+      const attack = Math.min(1, time / 0.012)
+      const decay = Math.exp((-5.4 * time) / noteSeconds)
+      const envelope = attack * decay
+      const phase = 2 * Math.PI * frequencyHz * time
+      // A bright, struck-string spectrum plus a short aperiodic hammer transient.
+      const pitched =
+        0.22 * Math.sin(phase) +
+        0.3 * Math.sin(2 * phase + 0.13) +
+        0.12 * Math.sin(3 * phase + 0.3) +
+        0.05 * Math.sin(4 * phase + 0.5)
+      const hammer = time < 0.025 ? noise() * 0.08 * (1 - time / 0.025) : 0
+      const index = startSample + offset
+      output[index] = (output[index] ?? 0) + pitched * envelope + hammer
+    }
+  }
+  return output
+}
+
 function contourPoint(
   timeSeconds: number,
   midiNote: number | null,
@@ -118,6 +163,13 @@ describe('offline monophonic analysis', () => {
     })
   })
 
+  it('retains every event in a short seven-note piano phrase after a two-second lead-in', () => {
+    const expectedMidi = [57, 69, 68, 64, 66, 64, 61]
+    const result = analyzeMonophonicPcm(decayingPianoPhrase(48_000, expectedMidi), 48_000)
+
+    expect(result.candidateNotes.map((note) => note.midiNote)).toEqual(expectedMidi)
+  })
+
   it('honors AbortSignal between bounded offline frame batches', async () => {
     const controller = new AbortController()
     const buffer = bufferFromChannels(24_000, [sine(24_000, 220, 0.3)])
@@ -206,7 +258,15 @@ describe('candidate segmentation and draft isolation', () => {
     const analysis: MonophonicAnalysisResult = {
       detectorVersion: 'yin-test',
       durationSeconds: 1,
-      contour: [contourPoint(0.1, 62), contourPoint(0.12, null, null)],
+      contour: [
+        contourPoint(0.1, 62),
+        {
+          ...contourPoint(0.12, 62, 0.55),
+          frequencyHz: null,
+          midiNote: null,
+          gapReason: 'low-confidence',
+        },
+      ],
       candidateNotes: [
         {
           candidateKey: 'candidate-000001',
@@ -234,9 +294,13 @@ describe('candidate segmentation and draft isolation', () => {
     })
     expect(draft.notes[0]?.midiNote).toBe(62)
     expect(draft.pitchPoints[1]).toMatchObject({
+      candidateHz: analysis.contour[1]?.candidateHz,
       frequencyHz: null,
       midiNote: null,
-      confidence: null,
+      confidence: 0.55,
+      rms: 0.2,
+      peak: 0.4,
+      gapReason: 'below-confidence',
     })
     expect(manualNotes[0]?.lyric).toBe('keep me')
   })

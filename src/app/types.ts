@@ -1,4 +1,5 @@
 import type { TargetMode } from '../features/setup/ProjectSetupScreen'
+import type { TargetPitchGapReason } from '../domain/types'
 
 export interface AppTargetNote {
   readonly id: string
@@ -11,9 +12,14 @@ export interface AppTargetNote {
 
 export interface AppTargetPitchPoint {
   readonly timeSeconds: number
+  /** Missing only on analyzed targets saved before raw-contour preservation. */
+  readonly candidateHz?: number | null | undefined
   readonly frequencyHz: number | null
   readonly midiNote: number | null
   readonly confidence: number | null
+  readonly rms?: number | null | undefined
+  readonly peak?: number | null | undefined
+  readonly gapReason?: TargetPitchGapReason | null | undefined
 }
 
 export interface AppLoop {

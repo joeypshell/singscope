@@ -25,31 +25,47 @@ export async function installDeterministicBrowserAdapters(page: Page): Promise<v
 
       const deterministicMelodySamples = (): Float32Array => {
         const sampleRate = 48_000
-        const segments = [
-          { seconds: 0.15, frequencyHz: 0 },
-          { seconds: 0.65, frequencyHz: 261.625565 },
-          { seconds: 0.18, frequencyHz: 0 },
-          { seconds: 0.65, frequencyHz: 329.627557 },
-          { seconds: 0.18, frequencyHz: 0 },
-          { seconds: 0.65, frequencyHz: 391.995436 },
-          { seconds: 0.15, frequencyHz: 0 },
-        ]
-        const length = segments.reduce(
-          (total, segment) => total + Math.round(segment.seconds * sampleRate),
-          0,
+        const midiNotes = [57, 69, 68, 64, 66, 68, 69]
+        const leadInSeconds = 0.45
+        const onsetSpacingSeconds = 0.56
+        const pitchedSeconds = 0.34
+        const durationSeconds = leadInSeconds + midiNotes.length * onsetSpacingSeconds + 0.4
+        let noiseState = 0x43a6_284d
+        const noise = () => {
+          noiseState = (Math.imul(noiseState, 1_664_525) + 1_013_904_223) >>> 0
+          return (noiseState / 0xffff_ffff) * 2 - 1
+        }
+        const samples = Float32Array.from(
+          { length: Math.round(durationSeconds * sampleRate) },
+          () => noise() * 0.0015,
         )
-        const samples = new Float32Array(length)
-        let offset = 0
-        for (const segment of segments) {
-          const segmentLength = Math.round(segment.seconds * sampleRate)
-          if (segment.frequencyHz > 0) {
-            for (let index = 0; index < segmentLength; index += 1) {
-              const envelope = Math.min(1, index / 480, (segmentLength - index - 1) / 480)
-              samples[offset + index] =
-                0.35 * envelope * Math.sin((2 * Math.PI * segment.frequencyHz * index) / sampleRate)
-            }
+
+        for (const [noteIndex, midiNote] of midiNotes.entries()) {
+          const frequencyHz = 440 * 2 ** ((midiNote - 69) / 12)
+          const onsetSample = Math.round(
+            (leadInSeconds + noteIndex * onsetSpacingSeconds) * sampleRate,
+          )
+          const pitchedSamples = Math.round(pitchedSeconds * sampleRate)
+          for (let index = 0; index < pitchedSamples; index += 1) {
+            const time = index / sampleRate
+            const attack = Math.min(1, time / 0.009)
+            const decay = Math.exp(-3.2 * time)
+            const phase = 2 * Math.PI * frequencyHz * time
+            const piano =
+              0.5 * Math.sin(phase) +
+              0.22 * Math.sin(2.002 * phase + 0.13) +
+              0.12 * Math.sin(3.008 * phase + 0.31) +
+              0.06 * Math.sin(4.018 * phase + 0.47)
+            samples[onsetSample + index] =
+              (samples[onsetSample + index] ?? 0) + 0.24 * attack * decay * piano
           }
-          offset += segmentLength
+
+          const tailStart = onsetSample + pitchedSamples
+          const tailSamples = Math.round((onsetSpacingSeconds - pitchedSeconds) * sampleRate)
+          for (let index = 0; index < tailSamples; index += 1) {
+            const decay = Math.exp((-2 * index) / tailSamples)
+            samples[tailStart + index] = (samples[tailStart + index] ?? 0) + noise() * 0.05 * decay
+          }
         }
         return samples
       }

@@ -75,6 +75,20 @@ describe('YinPitchDetector', () => {
     expect(detector.noiseFloorRms).toBeCloseTo(before)
   })
 
+  it('does not learn loud aperiodic note attacks as the ambient noise floor', () => {
+    const detector = new YinPitchDetector()
+    const before = detector.noiseFloorRms
+
+    for (let index = 0; index < 40; index += 1) {
+      expect(detector.detect(seededNoise(1_536), 24_000).reason).toBe('low-confidence')
+    }
+
+    expect(detector.noiseFloorRms).toBeCloseTo(before)
+    const quietSustain = detector.detect(sine(24_000, 220, 0.064, 0.006), 24_000)
+    expect(quietSustain.reason).toBeNull()
+    expect(quietSustain.frequencyHz).toBeCloseTo(220, 0)
+  })
+
   it('tracks octave changes without target-assisted correction', () => {
     const detector = new YinPitchDetector()
     const lower = detector.detect(sine(48_000, 220), 48_000)

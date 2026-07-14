@@ -107,6 +107,10 @@ export class YinPitchDetector implements PitchDetector {
       this.#noiseFloorRms * this.config.noiseGateMultiplier,
     )
     if (rms < gate) {
+      // Only a frame already classified by level may update the ambient floor.
+      // Aperiodic note attacks and overlapping piano decays are often rejected by
+      // YIN confidence despite being loud signal; learning those as "noise" makes
+      // the gate ratchet upward and can erase every later note in a phrase.
       this.#updateNoiseFloor(rms)
       return invalidEstimate('silence', rms, peak)
     }
@@ -164,7 +168,6 @@ export class YinPitchDetector implements PitchDetector {
       }
     }
     if (selectedTau === null) {
-      this.#updateNoiseFloor(rms)
       return invalidEstimate('low-confidence', rms, peak)
     }
 
@@ -174,7 +177,6 @@ export class YinPitchDetector implements PitchDetector {
     const inRange =
       candidateHz >= this.config.minimumFrequencyHz && candidateHz <= this.config.maximumFrequencyHz
     if (!inRange) {
-      this.#updateNoiseFloor(rms)
       return {
         candidateHz,
         frequencyHz: null,
@@ -186,7 +188,6 @@ export class YinPitchDetector implements PitchDetector {
       }
     }
     if (confidence < this.config.confidenceThreshold) {
-      this.#updateNoiseFloor(rms)
       return {
         candidateHz,
         frequencyHz: null,

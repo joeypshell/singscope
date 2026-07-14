@@ -62,7 +62,26 @@ describe('application view models', () => {
       ...createDemoProject(),
       transpositionSemitones: 12,
       targetPitchPoints: [
-        { timeSeconds: 0.5, frequencyHz: 261.63, midiNote: 60, confidence: 0.95 },
+        {
+          timeSeconds: 0.5,
+          candidateHz: 130.81,
+          frequencyHz: null,
+          midiNote: null,
+          confidence: 0.58,
+          rms: 0.08,
+          peak: 0.2,
+          gapReason: 'below-confidence' as const,
+        },
+        {
+          timeSeconds: 0.7,
+          candidateHz: 261.63,
+          frequencyHz: 261.63,
+          midiNote: 60,
+          confidence: 0.95,
+          rms: 0.1,
+          peak: 0.24,
+          gapReason: null,
+        },
       ],
       notes: [
         {
@@ -78,7 +97,58 @@ describe('application view models', () => {
     const scene = targetAnalysisScene(project, 1)
 
     expect(scene.targets[0]?.frequencyHz).toBeCloseTo(261.63, 1)
+    expect(scene.source[1]?.frequencyHz).toBeCloseTo(261.63, 1)
+    expect(scene.raw.map((point) => point.frequencyHz)).toEqual([130.81, 261.63])
+    expect(scene.gaps).toHaveLength(1)
+    expect(scene.viewport.minMidi).toBeLessThanOrEqual(48)
+  })
+
+  it('keeps legacy analyzed-target points readable without inventing raw candidates', () => {
+    const project = {
+      ...createDemoProject(),
+      targetPitchPoints: [
+        { timeSeconds: 0.5, frequencyHz: 261.63, midiNote: 60, confidence: 0.95 },
+      ],
+    }
+    const migrated = appProjectSchema.parse(project)
+    const scene = targetAnalysisScene(migrated, 1)
+
     expect(scene.source[0]?.frequencyHz).toBeCloseTo(261.63, 1)
+    expect(scene.raw[0]?.frequencyHz).toBeNull()
+  })
+
+  it('validates additive source-gap diagnostics without assuming normalized levels', () => {
+    const project = appProjectSchema.parse({
+      ...createDemoProject(),
+      targetPitchPoints: [
+        {
+          timeSeconds: 0.5,
+          candidateHz: null,
+          frequencyHz: null,
+          midiNote: null,
+          confidence: null,
+          rms: null,
+          peak: null,
+          gapReason: 'source-gap',
+        },
+        {
+          timeSeconds: 0.7,
+          candidateHz: 220,
+          frequencyHz: null,
+          midiNote: null,
+          confidence: 0.5,
+          rms: 1.1,
+          peak: 1.2,
+          gapReason: 'below-confidence',
+        },
+      ],
+    })
+
+    expect(project.targetPitchPoints[0]?.gapReason).toBe('source-gap')
+    expect(project.targetPitchPoints[1]).toMatchObject({
+      peak: 1.2,
+      gapReason: 'below-confidence',
+    })
   })
 
   it('maps a nonzero project loop onto take-local review time', () => {

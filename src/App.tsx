@@ -414,6 +414,8 @@ async function analyzeMonophonicSourceFile(
         lyric: '',
         scorable: note.scorable,
       })),
+      // Editable notes come from accepted segmentation, while pitchPoints retain
+      // every raw detector candidate and normalized analysis-gap reason.
       pitchPoints: draft.pitchPoints,
     }
   } finally {

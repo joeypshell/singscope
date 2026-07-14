@@ -220,9 +220,10 @@ export function ProjectSetupScreen({
                 <h3 id="analysis-check-heading">Check what SingScope heard</h3>
                 <p>
                   The dashed line is the accepted source pitch contour—not a waveform or a
-                  guaranteed transcription. The blue blocks are editable, quantized piano-note
-                  estimates at the source's recorded pitch. Project transpose is previewed in the
-                  piano roll below. Listen and compare before saving.
+                  guaranteed transcription. Red points are raw detector candidates; hollow points
+                  were not accepted. The blue blocks are editable, quantized piano-note estimates at
+                  the source's recorded pitch. Project transpose is previewed in the piano roll
+                  below. Listen and compare before saving.
                 </p>
               </div>
               {model.analysisSourceUrl ? (
@@ -237,13 +238,13 @@ export function ProjectSetupScreen({
               ) : null}
               <PitchChartCanvas
                 scene={model.analysisScene}
-                label="Analyzed source pitch contour overlaid with editable piano-note estimates. Gaps indicate frames without an accepted pitch."
+                label="Accepted and raw analyzed-source pitch overlaid with editable piano-note estimates. Hatched gaps indicate frames without an accepted pitch."
                 height={260}
               />
               <p className="ss-help">
-                This project stores the accepted contour. Detailed raw-candidate and gap reasons are
-                unavailable for this analysis version; the note list below is authoritative for
-                scoring.
+                This project stores accepted pitch, raw candidates, levels, and analysis gaps.
+                Hatched spans can still contain a rejected raw candidate. The editable note list
+                below is authoritative for scoring.
               </p>
             </section>
           ) : null}

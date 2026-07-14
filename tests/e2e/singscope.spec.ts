@@ -200,14 +200,16 @@ test('recorded melody becomes editable piano notes and a playable local referenc
   await expect(recorder.getByRole('status')).toContainText('Recording melody')
   await recorder.getByRole('button', { name: 'Stop and analyze' }).click()
 
-  await expect(page.getByText(/3 estimated notes from your recording/)).toBeVisible({
+  await expect(page.getByText(/7 estimated notes from your recording/)).toBeVisible({
     timeout: 15_000,
   })
-  await expect(page.getByLabel('Piano note sequence')).toContainText('C4 · E4 · G4')
+  await expect(page.getByLabel('Piano note sequence')).toContainText(
+    'A3 · A4 · G♯4 · E4 · F♯4 · G♯4 · A4',
+  )
   const midiNotes = page.getByLabel('MIDI note')
-  await expect(midiNotes).toHaveCount(3)
+  await expect(midiNotes).toHaveCount(7)
   await midiNotes.first().fill('62')
-  await expect(page.getByLabel('Piano note sequence')).toContainText('D4 · E4 · G4')
+  await expect(page.getByLabel('Piano note sequence')).toContainText('D4 · A4 · G♯4')
 
   const dismiss = page.getByRole('button', { name: 'Dismiss' })
   if (await dismiss.isVisible()) await dismiss.click()
@@ -237,7 +239,11 @@ test('recorded melody becomes editable piano notes and a playable local referenc
             targetMode?: string
             targetSourceMimeType?: string
             notes?: { midiNote?: number }[]
-            targetPitchPoints?: { frequencyHz?: number | null }[]
+            targetPitchPoints?: {
+              candidateHz?: number | null
+              frequencyHz?: number | null
+              gapReason?: string | null
+            }[]
           }
         | undefined
       const assetTransaction = database.transaction('assets', 'readonly')
@@ -253,6 +259,12 @@ test('recorded melody becomes editable piano notes and a playable local referenc
         sharesReference: payload?.referenceAssetId === payload?.targetSourceAssetId,
         midiNotes: payload?.notes?.map((note) => note.midiNote),
         hasPitchGaps: payload?.targetPitchPoints?.some((point) => point.frequencyHz === null),
+        hasRejectedCandidates: payload?.targetPitchPoints?.some(
+          (point) =>
+            point.frequencyHz === null &&
+            typeof point.candidateHz === 'number' &&
+            point.gapReason === 'below-confidence',
+        ),
         committedAssetCount: assets.filter((asset) => asset['status'] === 'committed').length,
       }
     } finally {
@@ -263,8 +275,9 @@ test('recorded melody becomes editable piano notes and a playable local referenc
     targetMode: 'isolated-vocal',
     targetSourceMimeType: 'audio/webm;codecs=opus',
     sharesReference: true,
-    midiNotes: [62, 64, 67],
+    midiNotes: [62, 69, 68, 64, 66, 68, 69],
     hasPitchGaps: true,
+    hasRejectedCandidates: true,
     committedAssetCount: 1,
   })
 

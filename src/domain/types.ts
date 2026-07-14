@@ -66,11 +66,20 @@ export interface TargetNote {
   readonly scorable: boolean
 }
 
+/** Source analysis can preserve an explicit media gap in addition to detector gaps. */
+export type TargetPitchGapReason = PitchGapReason | 'source-gap'
+
 export interface TargetPitchPoint {
   readonly timeSeconds: Seconds
+  /** Raw detector candidate, retained even when the frame was not accepted. */
+  readonly candidateHz?: number | null | undefined
   readonly frequencyHz: number | null
   readonly midiNote: number | null
   readonly confidence: number | null
+  /** Optional on records created before analyzed-source diagnostics were preserved. */
+  readonly rms?: number | null | undefined
+  readonly peak?: number | null | undefined
+  readonly gapReason?: TargetPitchGapReason | null | undefined
 }
 
 /** A target revision is immutable. Edits create a new revision with parentTargetSetId. */

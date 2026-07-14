@@ -16,6 +16,7 @@ import {
   type RecordingInterruption,
 } from '../audio/runtime'
 import { frequencyToMidi, midiNoteName } from '../domain'
+import { DETECTOR_VERSION } from '../domain/versions'
 import { getDatabase, RecordingAssetWriter, type InterruptionReason } from '../persistence'
 import { createMockPitchTrace } from './demo'
 import { getBinaryStore, referenceAudioUrl } from './files'
@@ -524,7 +525,7 @@ export function usePracticeController(
               rms: 0,
               peak: 0,
               gapReason: timeSeconds === null ? 'timeline-gap' : 'queue-overflow',
-              detectorVersion: 'yin-24k-v1',
+              detectorVersion: DETECTOR_VERSION,
             })
           },
           onPitchCandidate: (candidate) => {
@@ -558,7 +559,7 @@ export function usePracticeController(
                 timeSeconds !== null,
                 frequencyHz !== null,
               ),
-              detectorVersion: 'yin-24k-v1',
+              detectorVersion: DETECTOR_VERSION,
             })
           },
         })
@@ -655,7 +656,7 @@ export function usePracticeController(
             rms: 0,
             peak: 0,
             gapReason: 'timeline-gap',
-            detectorVersion: 'yin-24k-v1',
+            detectorVersion: DETECTOR_VERSION,
           })
         }
         const currentSeconds = active.player.currentProjectTime() ?? state.currentSeconds

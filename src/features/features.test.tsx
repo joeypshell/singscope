@@ -111,7 +111,7 @@ describe('project setup', () => {
             viewport: { startSeconds: 0, endSeconds: 2, minMidi: 58, maxMidi: 70 },
             targets: [{ startSeconds: 0, endSeconds: 1, frequencyHz: 293.66, label: 'D4' }],
             source: [{ timeSeconds: 0.5, frequencyHz: 261.63, confidence: 0.94 }],
-            raw: [],
+            raw: [{ timeSeconds: 0.45, frequencyHz: 130.81, confidence: 0.58 }],
             smoothed: [],
             gaps: [],
           },
@@ -158,6 +158,8 @@ describe('project setup', () => {
       'blob:recorded-source',
     )
     expect(within(verifier).getByText('Analyzed source contour')).toBeInTheDocument()
+    expect(within(verifier).getByText('Raw candidates')).toBeInTheDocument()
+    expect(within(verifier).getByText(/stores accepted pitch, raw candidates/)).toBeInTheDocument()
     expect(within(verifier).getByText(/note list below is authoritative/)).toBeInTheDocument()
   })
 
