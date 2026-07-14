@@ -49,15 +49,26 @@ export function PitchChartCanvas({ scene, label, onScrub, height = 320 }: PitchC
         {label}
       </canvas>
       <figcaption>
-        <span>
-          <i className="ss-key ss-key--target" /> Target
-        </span>
-        <span>
-          <i className="ss-key ss-key--raw" /> Raw
-        </span>
-        <span>
-          <i className="ss-key ss-key--smooth" /> Smoothed
-        </span>
+        {scene.targets.length > 0 ? (
+          <span>
+            <i className="ss-key ss-key--target" /> Editable target
+          </span>
+        ) : null}
+        {scene.source.length > 0 && scene.mode !== 'cents' ? (
+          <span>
+            <i className="ss-key ss-key--source" /> Analyzed source contour
+          </span>
+        ) : null}
+        {scene.raw.length > 0 ? (
+          <span>
+            <i className="ss-key ss-key--raw" /> Raw candidates
+          </span>
+        ) : null}
+        {scene.smoothed.length > 0 ? (
+          <span>
+            <i className="ss-key ss-key--smooth" /> Smoothed accepted pitch
+          </span>
+        ) : null}
       </figcaption>
       {onScrub ? (
         <input

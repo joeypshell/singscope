@@ -4,7 +4,7 @@ import {
   DETECTOR_VERSION,
   METRICS_FORMULA_VERSION,
   metricDisplays,
-  projectScene,
+  reviewScene,
   takeMetrics,
 } from './view-models'
 import {
@@ -124,7 +124,7 @@ async function createChartPng(project: AppProject, take: AppTake): Promise<Blob>
   canvas.height = resolution.pixelHeight
   const context = canvas.getContext('2d')
   if (!context) throw new Error('Canvas export is unavailable.')
-  renderPitchChart(context, projectScene(project, take.points, 0, true), resolution)
+  renderPitchChart(context, reviewScene(project, take, 0), resolution)
   return new Promise<Blob>((resolve, reject) =>
     canvas.toBlob(
       (blob) => (blob ? resolve(blob) : reject(new Error('Pitch chart could not be encoded.'))),
@@ -204,6 +204,7 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
   const audio = useRef<HTMLAudioElement | null>(null)
   const audioUrl = useRef<string | null>(null)
   const playbackOptions = useRef({ loopPlayback, pitchMode, zoomLevel })
+  const playbackLoopRange = useRef<{ startSeconds: number; endSeconds: number } | null>(null)
   const prepared = useRef<PreparedPackage | null>(null)
   const preparedHandle = useRef<PreparedExportHandle | null>(null)
   const individual = useRef<IndividualExports | null>(null)
@@ -240,16 +241,10 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
       element.preload = 'metadata'
       element.addEventListener('timeupdate', () => {
         const options = playbackOptions.current
-        const scene = projectScene(
-          project,
-          take.points,
-          element.currentTime,
-          true,
-          options.pitchMode,
-          options.zoomLevel,
-        )
-        if (options.loopPlayback && element.currentTime >= scene.viewport.endSeconds)
-          element.currentTime = scene.viewport.startSeconds
+        const loopRange = playbackLoopRange.current
+        if (options.loopPlayback && loopRange && element.currentTime >= loopRange.endSeconds) {
+          element.currentTime = loopRange.startSeconds
+        }
         setCurrentSeconds(element.currentTime)
       })
       element.addEventListener('ended', () => setPlaybackPhase('idle'))
@@ -292,11 +287,26 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
       const session = {
         schemaVersion: 1,
         project: { id: project.id, name: project.title },
-        take: { id: take.id, recordedAt: take.createdAt, partialReason: take.partialReason },
+        take: {
+          id: take.id,
+          recordedAt: take.createdAt,
+          projectStartSeconds: take.projectStartSeconds,
+          projectEndSeconds: take.projectStartSeconds + take.durationSeconds,
+          partialReason: take.partialReason,
+        },
         target: {
           mode: project.targetMode,
           revision: project.targetRevision,
           confidence: project.targetMode === 'isolated-vocal' ? 'estimated' : 'authoritative',
+          alignmentSeconds: project.alignmentSeconds,
+          transpositionSemitones: project.transpositionSemitones,
+        },
+        settings: {
+          concertAHz: 440,
+          confidenceThreshold: 0.75,
+          timingOffsetSeconds: project.timingOffsetSeconds,
+          alignmentSeconds: project.alignmentSeconds,
+          transpositionSemitones: project.transpositionSemitones,
         },
         tuningHz: 440,
         toleranceCents: 50,
@@ -305,6 +315,7 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
       }
       const pitchRows = take.points.map((point) => [
         point.timeSeconds,
+        point.timeSeconds - take.projectStartSeconds,
         point.contextTimeSeconds,
         point.candidateHz,
         point.frequencyHz,
@@ -319,6 +330,9 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
         note.startSeconds,
         note.endSeconds,
         note.midiNote,
+        note.startSeconds + project.alignmentSeconds,
+        note.endSeconds + project.alignmentSeconds,
+        note.midiNote + project.transpositionSemitones,
         note.lyric,
         note.scorable,
       ])
@@ -331,6 +345,7 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
       ])
       const pitchHeaders = [
         'time_seconds',
+        'recording_time_seconds',
         'audio_context_seconds',
         'raw_candidate_hz',
         'accepted_frequency_hz',
@@ -340,7 +355,17 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
         'peak',
         'gap_reason',
       ]
-      const noteHeaders = ['id', 'start_seconds', 'end_seconds', 'midi_note', 'lyric', 'scorable']
+      const noteHeaders = [
+        'id',
+        'source_start_seconds',
+        'source_end_seconds',
+        'source_midi_note',
+        'effective_start_seconds',
+        'effective_end_seconds',
+        'effective_midi_note',
+        'lyric',
+        'scorable',
+      ]
       const pitchCsv = csv(pitchHeaders, pitchRows)
       const targetCsv = csv(noteHeaders, noteRows)
       const sessionJson = new Blob([`${JSON.stringify(session, null, 2)}\n`], {
@@ -444,11 +469,7 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
             rows: sectionRows,
           },
           summary: session,
-          settings: {
-            concertAHz: 440,
-            confidenceThreshold: 0.75,
-            timingOffsetSeconds: project.timingOffsetSeconds,
-          },
+          settings: session.settings,
           chartPng,
           report: reportInput,
           readmeNotes: omissions,
@@ -525,6 +546,17 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
       loopPlayback,
       export: exportState,
       play() {
+        const range = playbackLoopRange.current
+        if (
+          audio.current &&
+          loopPlayback &&
+          range &&
+          (audio.current.currentTime < range.startSeconds ||
+            audio.current.currentTime >= range.endSeconds)
+        ) {
+          audio.current.currentTime = range.startSeconds
+          setCurrentSeconds(range.startSeconds)
+        }
         const promise = audio.current?.play()
         if (promise)
           void promise
@@ -547,9 +579,40 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
       },
       setTraceDisplay,
       setPitchMode,
-      zoomIn: () => setZoomLevel((value) => Math.min(8, value * 1.5)),
-      zoomOut: () => setZoomLevel((value) => Math.max(1, value / 1.5)),
-      setLoopPlayback,
+      zoomIn: () =>
+        setZoomLevel((value) => {
+          const next = Math.min(8, value * 1.5)
+          if (loopPlayback) {
+            playbackLoopRange.current = reviewScene(
+              project,
+              take,
+              currentSeconds,
+              pitchMode,
+              next,
+            ).viewport
+          }
+          return next
+        }),
+      zoomOut: () =>
+        setZoomLevel((value) => {
+          const next = Math.max(1, value / 1.5)
+          if (loopPlayback) {
+            playbackLoopRange.current = reviewScene(
+              project,
+              take,
+              currentSeconds,
+              pitchMode,
+              next,
+            ).viewport
+          }
+          return next
+        }),
+      setLoopPlayback(value: boolean) {
+        playbackLoopRange.current = value
+          ? reviewScene(project, take, currentSeconds, pitchMode, zoomLevel).viewport
+          : null
+        setLoopPlayback(value)
+      },
       setIncludeReference: (includeReference: boolean) =>
         setExportState((current) => ({ ...current, includeReference, phase: 'idle' })),
       setIncludeWav: (includeWav: boolean) =>
@@ -577,7 +640,9 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
       pitchMode,
       playbackPhase,
       prepareExport,
+      project,
       shareExport,
+      take,
       traceDisplay,
       zoomLevel,
     ],

@@ -2,6 +2,7 @@ import {
   buildScoringObservations,
   calculateMetricsReport,
   centsBetweenMidi,
+  frequencyToMidi,
   midiNoteName,
   midiToFrequency,
   type DetectedPitchPoint,
@@ -60,14 +61,19 @@ export function toTargetSet(project: AppProject): TargetSet {
   }
 }
 
-function gapsFrom(points: readonly AppPitchPoint[]): PitchChartScene['gaps'] {
+function gapsFrom(
+  points: readonly AppPitchPoint[],
+  transformTime: (seconds: number) => number,
+): PitchChartScene['gaps'] {
   const gaps: { startSeconds: number; endSeconds: number }[] = []
   let start: number | null = null
   let end = 0
-  for (const point of points) {
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index]
+    if (!point) continue
     if (point.frequencyHz === null || point.gapReason !== null) {
-      start ??= point.timeSeconds
-      end = point.timeSeconds + 0.02
+      start ??= transformTime(point.timeSeconds)
+      end = transformTime(points[index + 1]?.timeSeconds ?? point.timeSeconds + 0.02)
     } else if (start !== null) {
       gaps.push({ startSeconds: start, endSeconds: end })
       start = null
@@ -75,6 +81,148 @@ function gapsFrom(points: readonly AppPitchPoint[]): PitchChartScene['gaps'] {
   }
   if (start !== null) gaps.push({ startSeconds: start, endSeconds: end })
   return gaps
+}
+
+function targetGapsFrom(
+  points: AppProject['targetPitchPoints'],
+  transformTime: (seconds: number) => number,
+): PitchChartScene['gaps'] {
+  const gaps: { startSeconds: number; endSeconds: number }[] = []
+  let start: number | null = null
+  let end = 0
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index]
+    if (!point) continue
+    if (point.frequencyHz === null) {
+      start ??= transformTime(point.timeSeconds)
+      end = transformTime(points[index + 1]?.timeSeconds ?? point.timeSeconds + 0.02)
+    } else if (start !== null) {
+      gaps.push({ startSeconds: start, endSeconds: end })
+      start = null
+    }
+  }
+  if (start !== null) gaps.push({ startSeconds: start, endSeconds: end })
+  return gaps
+}
+
+function pitchBounds(frequencies: readonly (number | null)[]): {
+  minMidi: number
+  maxMidi: number
+} {
+  let lowestMidi = Number.POSITIVE_INFINITY
+  let highestMidi = Number.NEGATIVE_INFINITY
+  for (const frequencyHz of frequencies) {
+    if (frequencyHz === null || !Number.isFinite(frequencyHz) || frequencyHz <= 0) continue
+    const midi = frequencyToMidi(frequencyHz)
+    if (midi === null) continue
+    lowestMidi = Math.min(lowestMidi, midi)
+    highestMidi = Math.max(highestMidi, midi)
+  }
+  if (!Number.isFinite(lowestMidi) || !Number.isFinite(highestMidi)) {
+    return { minMidi: 48, maxMidi: 76 }
+  }
+  let minMidi = Math.floor(lowestMidi) - 2
+  let maxMidi = Math.ceil(highestMidi) + 2
+  if (maxMidi - minMidi < 12) {
+    const center = (minMidi + maxMidi) / 2
+    minMidi = Math.floor(center - 6)
+    maxMidi = Math.ceil(center + 6)
+  }
+  if (minMidi < 0) {
+    maxMidi -= minMidi
+    minMidi = 0
+  }
+  if (maxMidi > 127) {
+    minMidi -= maxMidi - 127
+    maxMidi = 127
+  }
+  return { minMidi: Math.max(0, minMidi), maxMidi: Math.min(127, maxMidi) }
+}
+
+interface SceneTimeline {
+  readonly durationSeconds: number
+  readonly originSeconds: number
+}
+
+function buildProjectScene(
+  project: AppProject,
+  points: readonly AppPitchPoint[],
+  playheadSeconds: number,
+  review: boolean,
+  mode: 'pitch' | 'cents',
+  zoom: number,
+  timeline: SceneTimeline,
+): PitchChartScene {
+  const duration = Math.max(0.02, timeline.durationSeconds)
+  const windowSeconds = review ? duration / Math.max(1, zoom) : Math.min(10, duration)
+  const startSeconds = review
+    ? Math.max(0, Math.min(duration - windowSeconds, playheadSeconds - windowSeconds / 2))
+    : Math.max(0, Math.min(duration - windowSeconds, playheadSeconds - windowSeconds * 0.42))
+  const observedTime = (seconds: number) =>
+    seconds + project.timingOffsetSeconds - timeline.originSeconds
+  const targetTime = (seconds: number) =>
+    seconds + project.alignmentSeconds - timeline.originSeconds
+  const display = smoothPitchForDisplay(detected(points))
+  const targets = project.notes.map((note) => ({
+    startSeconds: targetTime(note.startSeconds),
+    endSeconds: targetTime(note.endSeconds),
+    frequencyHz: midiToFrequency(note.midiNote + project.transpositionSemitones) ?? 440,
+    label:
+      note.lyric.length > 0
+        ? note.lyric
+        : (midiNoteName(note.midiNote + project.transpositionSemitones) ?? undefined),
+  }))
+  const source = project.targetPitchPoints.map((point) => ({
+    timeSeconds: targetTime(point.timeSeconds),
+    frequencyHz: point.frequencyHz,
+    confidence: point.confidence ?? 0,
+  }))
+  const raw = points.map((point) => ({
+    timeSeconds: observedTime(point.timeSeconds),
+    frequencyHz: point.candidateHz,
+    confidence: point.confidence ?? 0,
+  }))
+  const smoothed = display.map((point) => ({
+    timeSeconds: observedTime(point.timeSeconds),
+    frequencyHz: point.smoothedFrequencyHz,
+    confidence: point.confidence ?? 0,
+  }))
+  const bounds = pitchBounds([
+    ...targets
+      .filter(
+        (target) =>
+          target.endSeconds >= startSeconds && target.startSeconds <= startSeconds + windowSeconds,
+      )
+      .map((target) => target.frequencyHz),
+    ...source
+      .filter(
+        (point) =>
+          point.timeSeconds >= startSeconds && point.timeSeconds <= startSeconds + windowSeconds,
+      )
+      .map((point) => point.frequencyHz),
+    ...raw
+      .filter(
+        (point) =>
+          point.timeSeconds >= startSeconds && point.timeSeconds <= startSeconds + windowSeconds,
+      )
+      .map((point) => point.frequencyHz),
+    ...smoothed
+      .filter(
+        (point) =>
+          point.timeSeconds >= startSeconds && point.timeSeconds <= startSeconds + windowSeconds,
+      )
+      .map((point) => point.frequencyHz),
+  ])
+  return {
+    viewport: { startSeconds, endSeconds: startSeconds + windowSeconds, ...bounds },
+    targets,
+    source,
+    raw,
+    smoothed,
+    gaps: gapsFrom(points, observedTime),
+    playheadSeconds,
+    mode,
+  }
 }
 
 export function projectScene(
@@ -85,36 +233,61 @@ export function projectScene(
   mode: 'pitch' | 'cents' = 'pitch',
   zoom = 1,
 ): PitchChartScene {
-  const duration = Math.max(1, project.referenceDurationSeconds)
-  const windowSeconds = review ? duration / Math.max(1, zoom) : Math.min(10, duration)
-  const startSeconds = review
-    ? Math.max(0, Math.min(duration - windowSeconds, playheadSeconds - windowSeconds / 2))
-    : Math.max(0, Math.min(duration - windowSeconds, playheadSeconds - windowSeconds * 0.42))
-  const display = smoothPitchForDisplay(detected(points))
+  return buildProjectScene(project, points, playheadSeconds, review, mode, zoom, {
+    durationSeconds: project.referenceDurationSeconds,
+    originSeconds: 0,
+  })
+}
+
+export function reviewScene(
+  project: AppProject,
+  take: AppTake,
+  playheadSeconds: number,
+  mode: 'pitch' | 'cents' = 'pitch',
+  zoom = 1,
+): PitchChartScene {
+  return buildProjectScene(project, take.points, playheadSeconds, true, mode, zoom, {
+    durationSeconds: take.durationSeconds,
+    originSeconds: take.projectStartSeconds,
+  })
+}
+
+export function targetAnalysisScene(
+  project: Pick<
+    AppProject,
+    | 'notes'
+    | 'targetPitchPoints'
+    | 'transpositionSemitones'
+    | 'alignmentSeconds'
+    | 'timingOffsetSeconds'
+  >,
+  durationSeconds: number,
+): PitchChartScene {
+  const targets = project.notes.map((note) => ({
+    // Setup verifies source-local analysis. Project alignment is applied later against backing audio.
+    startSeconds: note.startSeconds,
+    endSeconds: note.endSeconds,
+    frequencyHz: midiToFrequency(note.midiNote) ?? 440,
+    label: midiNoteName(note.midiNote) ?? undefined,
+  }))
+  const source = project.targetPitchPoints.map((point) => ({
+    timeSeconds: point.timeSeconds,
+    frequencyHz: point.frequencyHz,
+    confidence: point.confidence ?? 0,
+  }))
+  const bounds = pitchBounds([
+    ...targets.map((target) => target.frequencyHz),
+    ...source.map((point) => point.frequencyHz),
+  ])
   return {
-    viewport: { startSeconds, endSeconds: startSeconds + windowSeconds, minMidi: 48, maxMidi: 76 },
-    targets: project.notes.map((note) => ({
-      startSeconds: Math.max(0, note.startSeconds + project.alignmentSeconds),
-      endSeconds: Math.max(0, note.endSeconds + project.alignmentSeconds),
-      frequencyHz: midiToFrequency(note.midiNote + project.transpositionSemitones) ?? 440,
-      label:
-        note.lyric.length > 0
-          ? note.lyric
-          : (midiNoteName(note.midiNote + project.transpositionSemitones) ?? undefined),
-    })),
-    raw: points.map((point) => ({
-      timeSeconds: point.timeSeconds + project.timingOffsetSeconds,
-      frequencyHz: point.frequencyHz,
-      confidence: point.confidence ?? 0,
-    })),
-    smoothed: display.map((point) => ({
-      timeSeconds: point.timeSeconds + project.timingOffsetSeconds,
-      frequencyHz: point.smoothedFrequencyHz,
-      confidence: point.confidence ?? 0,
-    })),
-    gaps: gapsFrom(points),
-    playheadSeconds,
-    mode,
+    viewport: { startSeconds: 0, endSeconds: Math.max(0.02, durationSeconds), ...bounds },
+    targets,
+    source,
+    raw: [],
+    smoothed: [],
+    gaps: targetGapsFrom(project.targetPitchPoints, (seconds) => seconds),
+    playheadSeconds: null,
+    mode: 'pitch',
   }
 }
 
@@ -171,30 +344,49 @@ export function metricDisplays(report: MetricsReport['overall']): readonly Metri
 
 export function takeMetrics(project: AppProject, take: AppTake): MetricsReport {
   const target = toTargetSet(project)
-  const observations = buildScoringObservations(detected(take.points), target)
-  const onsets = project.notes.map((note) => {
+  const takeEndSeconds = take.projectStartSeconds + take.durationSeconds
+  const adjustedPoints = detected(take.points)
+    .map((point) => ({
+      ...point,
+      timeSeconds: point.timeSeconds + project.timingOffsetSeconds,
+    }))
+    .filter(
+      (point) =>
+        point.timeSeconds >= take.projectStartSeconds && point.timeSeconds <= takeEndSeconds,
+    )
+  const observations = buildScoringObservations(adjustedPoints, target)
+  const onsets = project.notes.flatMap((note) => {
     const start = note.startSeconds + project.alignmentSeconds
-    const observed = take.points.find(
+    if (start < take.projectStartSeconds || start > takeEndSeconds) return []
+    const observed = adjustedPoints.find(
       (point) =>
         point.timeSeconds >= start - 0.2 &&
         point.timeSeconds <= start + 0.5 &&
         (point.confidence ?? 0) >= 0.75,
     )
-    return {
-      targetNoteId: note.id,
-      targetTimeSeconds: start,
-      observedTimeSeconds: observed?.timeSeconds ?? null,
-    }
+    return [
+      {
+        targetNoteId: note.id,
+        targetTimeSeconds: start,
+        observedTimeSeconds: observed?.timeSeconds ?? null,
+      },
+    ]
   })
   return calculateMetricsReport(
     observations,
     onsets,
-    project.loops.map((loop) => ({
-      id: loop.id,
-      name: loop.name,
-      startSeconds: loop.startSeconds,
-      endSeconds: loop.endSeconds,
-    })),
+    project.loops.flatMap((loop) =>
+      loop.endSeconds < take.projectStartSeconds || loop.startSeconds > takeEndSeconds
+        ? []
+        : [
+            {
+              id: loop.id,
+              name: loop.name,
+              startSeconds: Math.max(loop.startSeconds, take.projectStartSeconds),
+              endSeconds: Math.min(loop.endSeconds, takeEndSeconds),
+            },
+          ],
+    ),
   )
 }
 
@@ -203,27 +395,33 @@ export function inspectedPoint(
   take: AppTake,
   timeSeconds: number,
 ): ReviewPointView | null {
+  const projectTimeSeconds = take.projectStartSeconds + timeSeconds
   const point = [...take.points].sort(
-    (a, b) => Math.abs(a.timeSeconds - timeSeconds) - Math.abs(b.timeSeconds - timeSeconds),
+    (a, b) =>
+      Math.abs(a.timeSeconds + project.timingOffsetSeconds - projectTimeSeconds) -
+      Math.abs(b.timeSeconds + project.timingOffsetSeconds - projectTimeSeconds),
   )[0]
-  if (!point || Math.abs(point.timeSeconds - timeSeconds) > 0.15) return null
+  const adjustedPointTime = (point?.timeSeconds ?? 0) + project.timingOffsetSeconds
+  if (!point || Math.abs(adjustedPointTime - projectTimeSeconds) > 0.15) return null
   const target = project.notes.find(
     (note) =>
-      timeSeconds >= note.startSeconds + project.alignmentSeconds &&
-      timeSeconds < note.endSeconds + project.alignmentSeconds,
+      projectTimeSeconds >= note.startSeconds + project.alignmentSeconds &&
+      projectTimeSeconds < note.endSeconds + project.alignmentSeconds,
   )
   const targetMidi = target ? target.midiNote + project.transpositionSemitones : null
   const targetFrequencyHz = targetMidi === null ? null : midiToFrequency(targetMidi)
+  const observedFrequencyHz = point.candidateHz
+  const observedMidi = observedFrequencyHz === null ? null : frequencyToMidi(observedFrequencyHz)
   return {
-    timeSeconds: point.timeSeconds,
-    frequencyHz: point.frequencyHz,
+    timeSeconds: adjustedPointTime - take.projectStartSeconds,
+    frequencyHz: observedFrequencyHz,
     confidence: point.confidence ?? 0,
     targetFrequencyHz,
     centsError:
-      point.midiNote === null || targetMidi === null
+      observedMidi === null || targetMidi === null
         ? null
-        : centsBetweenMidi(point.midiNote, targetMidi),
-    noteLabel: point.midiNote === null ? null : midiNoteName(point.midiNote),
+        : centsBetweenMidi(observedMidi, targetMidi),
+    noteLabel: observedMidi === null ? null : midiNoteName(observedMidi),
   }
 }
 

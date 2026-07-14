@@ -196,6 +196,7 @@ export async function prepareProjectBackup(project: AppProject): Promise<Prepare
         id: take.id,
         createdAt: take.createdAt,
         label: take.label,
+        projectStartSeconds: take.projectStartSeconds,
         durationSeconds: take.durationSeconds,
         audioAssetId: take.audioAssetId,
         audioMimeType: take.audioMimeType,

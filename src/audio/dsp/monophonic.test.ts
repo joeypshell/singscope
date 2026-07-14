@@ -158,6 +158,13 @@ describe('offline monophonic analysis', () => {
 })
 
 describe('candidate segmentation and draft isolation', () => {
+  it('uses the detector frame support so short stable notes are not visually shortened away', () => {
+    const notes = segmentMonophonicContour([contourPoint(0.032, 60), contourPoint(0.052, 60)])
+    expect(notes).toHaveLength(1)
+    expect(notes[0]?.startSeconds).toBe(0)
+    expect(notes[0]?.endSeconds).toBeCloseTo(0.084)
+  })
+
   it('bridges a short gap while preserving it in the contour and splits a real note change', () => {
     const contour = [
       contourPoint(0.03, 60),

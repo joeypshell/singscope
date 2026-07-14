@@ -47,16 +47,40 @@ const targetPitchPoint = z.object({
   confidence: finite.min(0).max(1).nullable(),
 })
 
-const take = z.object({
-  id,
-  createdAt: utc,
-  label: z.string().min(1).max(120),
-  durationSeconds: time.max(900),
-  audioAssetId: id.nullable(),
-  audioMimeType: z.string().max(255).nullable(),
-  partialReason: z.string().max(120).nullable(),
-  points: z.array(pitchPoint).max(500_000),
-})
+const take = z
+  .object({
+    id,
+    createdAt: utc,
+    label: z.string().min(1).max(120),
+    projectStartSeconds: time.optional(),
+    durationSeconds: time.max(900),
+    audioAssetId: id.nullable(),
+    audioMimeType: z.string().max(255).nullable(),
+    partialReason: z.string().max(120).nullable(),
+    points: z.array(pitchPoint).max(500_000),
+  })
+  .transform((value) => {
+    if (value.projectStartSeconds !== undefined)
+      return value as typeof value & {
+        projectStartSeconds: number
+      }
+    let first = Number.POSITIVE_INFINITY
+    let last = Number.NEGATIVE_INFINITY
+    for (const point of value.points) {
+      first = Math.min(first, point.timeSeconds)
+      last = Math.max(last, point.timeSeconds)
+    }
+    let projectStartSeconds = 0
+    if (Number.isFinite(first) && Number.isFinite(last) && last > value.durationSeconds + 0.25) {
+      const coverage = last - first
+      projectStartSeconds =
+        coverage >= value.durationSeconds * 0.5 ? (first + last - value.durationSeconds) / 2 : first
+    }
+    return {
+      ...value,
+      projectStartSeconds: Math.max(0, Math.min(7_200, Number(projectStartSeconds.toFixed(3)))),
+    }
+  })
 
 export const appProjectSchema = z
   .object({

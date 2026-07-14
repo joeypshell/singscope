@@ -13,6 +13,7 @@ export interface EditableTargetNote {
 export interface TargetNoteEditorProps {
   readonly notes: readonly EditableTargetNote[]
   readonly transpositionSemitones?: number | undefined
+  readonly durationSeconds?: number | undefined
   readonly onChange: (note: EditableTargetNote) => void
   readonly onAdd: () => void
   readonly onRemove: (id: string) => void
@@ -26,6 +27,7 @@ function pianoNoteName(midiNote: number, transpositionSemitones: number): string
 export function TargetNoteEditor({
   notes,
   transpositionSemitones = 0,
+  durationSeconds,
   onChange,
   onAdd,
   onRemove,
@@ -48,7 +50,12 @@ export function TargetNoteEditor({
           <strong>Piano notes after transpose:</strong> {pianoNotes.join(' · ')}
         </p>
       ) : null}
-      <TouchPianoRoll notes={notes} onChange={onChange} />
+      <TouchPianoRoll
+        notes={notes}
+        onChange={onChange}
+        transpositionSemitones={transpositionSemitones}
+        durationSeconds={durationSeconds}
+      />
       <ol className="ss-note-list">
         {notes.map((note, index) => (
           <li key={note.id}>

@@ -60,6 +60,37 @@ test('demo practice saves a take and opens transparent review', async ({ page })
   expect(persistedTakeCount).toBe(1)
 })
 
+test('review loops the captured visible window instead of a moving viewport', async ({ page }) => {
+  await openSyntheticDemo(page)
+  await page.getByRole('button', { name: 'Start' }).click()
+  await expect(
+    page.getByRole('region', { name: 'Practice transport' }).getByText('● Recording'),
+  ).toBeVisible({ timeout: 8_000 })
+  await page.waitForTimeout(2_500)
+  await page
+    .getByRole('region', { name: 'Practice transport' })
+    .getByRole('button', { name: 'Stop' })
+    .evaluate((button: HTMLButtonElement) => button.click())
+  await expect(page).toHaveURL(/#\/review\//, { timeout: 10_000 })
+
+  await page.getByRole('button', { name: 'Zoom in' }).click()
+  await page.getByRole('button', { name: 'Zoom in' }).click()
+  await page.getByLabel('Loop the visible review range').check()
+  await page
+    .getByRole('region', { name: 'Practice transport' })
+    .getByRole('button', { name: 'Start' })
+    .click()
+  await page.waitForTimeout(1_600)
+
+  const position = Number(
+    await page
+      .getByRole('region', { name: 'Practice transport' })
+      .getByLabel('Timeline position')
+      .inputValue(),
+  )
+  expect(position).toBeLessThan(1.2)
+})
+
 test('enabled loop repetitions are saved as separate takes', async ({ page }) => {
   await openSyntheticDemo(page)
   const loopEnd = page.getByLabel('Loop end')
@@ -291,6 +322,22 @@ test('prepared feedback ZIP contains every required coach file', async ({ page }
     expect(manifest.includesReferenceAudio).toBe(false)
     expect(manifest.files.map((file) => file.path)).not.toContain('reference.wav')
     expect(manifest.files.every((file) => /^[a-f0-9]{64}$/.test(file.sha256))).toBe(true)
+
+    const sessionText = await fileEntry('session.json').getData(new TextWriter())
+    const session = JSON.parse(sessionText) as {
+      summary: { target: { alignmentSeconds: number; transpositionSemitones: number } }
+      settings: { alignmentSeconds: number; transpositionSemitones: number }
+    }
+    expect(session.summary.target).toMatchObject({
+      alignmentSeconds: 0,
+      transpositionSemitones: 0,
+    })
+    expect(session.settings).toMatchObject({ alignmentSeconds: 0, transpositionSemitones: 0 })
+
+    const targetCsv = await fileEntry('target-notes.csv').getData(new TextWriter())
+    expect(targetCsv.split(/\r?\n/, 1)[0]).toBe(
+      'id,source_start_seconds,source_end_seconds,source_midi_note,effective_start_seconds,effective_end_seconds,effective_midi_note,lyric,scorable',
+    )
 
     const report = await fileEntry('report.html').getData(new TextWriter())
     expect(report).not.toMatch(/<script/i)

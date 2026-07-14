@@ -21,6 +21,7 @@ export interface ReferencePlayerSnapshot {
 
 export interface StartPlaybackOptions {
   readonly loopStartSeconds: number
+  readonly loopEndSeconds: number
   readonly countdownSeconds: number
   readonly playbackRate?: PlaybackRate
 }
@@ -56,6 +57,8 @@ export type RecordingInterruption =
   | 'audio-context-interrupted'
   | 'microphone-ended'
   | 'route-lost'
+  | 'reference-stalled'
+  | 'reference-ended'
   | 'size-limit'
   | 'duration-limit'
 

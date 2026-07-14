@@ -55,6 +55,8 @@ Use wired or USB-C headphones for the most predictable playback/capture route. A
 
 Direct melody recording is foreground-only. If Safari or the Home Screen app is interrupted, capture stops and never auto-resumes; review the partial source if offered or record it again.
 
+After local analysis, **Check what SingScope heard** plays the exact source and overlays the accepted pitch contour with editable piano-note estimates. The chart auto-ranges across the detected/target notes, and the visible edited note list—not a hidden contour—is authoritative for scoring.
+
 ## Privacy and hosting
 
 All runtime code and assets are bundled. There is no analytics, telemetry, account, cloud backend, external AI, upload API, CDN, or streaming-service integration. Normal app-shell requests reach GitHub Pages and may be logged by GitHub. Recordings are never requested by or sent to the application host.

@@ -332,6 +332,10 @@
   overflow: clip;
 }
 
+.ss-card audio {
+  inline-size: 100%;
+}
+
 .ss-chart canvas {
   display: block;
   inline-size: 100%;
@@ -365,6 +369,9 @@
 
 .ss-key--target {
   border-block-start: 6px solid #244e8a;
+}
+.ss-key--source {
+  border-block-start: 3px dashed #6b3fa0;
 }
 .ss-key--raw {
   border-block-start: 3px dotted #be3d2a;

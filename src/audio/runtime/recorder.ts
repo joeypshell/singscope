@@ -37,7 +37,9 @@ interface ForegroundRecorderDependencies {
 type RecordingListener = (snapshot: RecordingSnapshot) => void
 
 function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : 'Recording failed.'
+  return error instanceof DOMException || error instanceof Error
+    ? error.message
+    : 'Recording failed.'
 }
 
 export class ForegroundRecorder {
@@ -53,6 +55,11 @@ export class ForegroundRecorder {
   private readonly cleanupCallbacks: (() => void)[] = []
   private pendingWrites: Promise<void> = Promise.resolve()
   private startContextTime: number | null = null
+  private stopContextTime: number | null = null
+  private bufferingPauseContextTime: number | null = null
+  private completedBufferingPauseSeconds = 0
+  private bufferingResumeRequested = false
+  private failed = false
   private finalizePromise: Promise<void> | null = null
   private sequence = 0
   private snapshot: RecordingSnapshot
@@ -106,8 +113,49 @@ export class ForegroundRecorder {
       throw new DOMException('AudioContext must be running before recording.', 'InvalidStateError')
     }
     this.startContextTime = this.clock.currentTime
-    this.recorder.start(1000)
-    this.patch({ phase: 'recording', error: null })
+    this.stopContextTime = null
+    this.bufferingPauseContextTime = null
+    this.completedBufferingPauseSeconds = 0
+    this.bufferingResumeRequested = false
+    try {
+      this.recorder.start(1000)
+      this.patch({ phase: 'recording', error: null })
+    } catch (error) {
+      void this.fail(error)
+      throw error
+    }
+  }
+
+  pauseForBuffering(): boolean {
+    if (this.snapshot.phase !== 'recording') return false
+    if (this.bufferingPauseContextTime !== null) return true
+    if (this.recorder.state !== 'recording') return false
+    try {
+      this.bufferingPauseContextTime = this.clock.currentTime
+      this.bufferingResumeRequested = false
+      this.recorder.pause()
+      return true
+    } catch {
+      this.bufferingPauseContextTime = null
+      return false
+    }
+  }
+
+  resumeAfterBuffering(): boolean {
+    if (this.bufferingPauseContextTime === null) return true
+    this.bufferingResumeRequested = true
+    if (this.recorder.state !== 'paused') return this.recorder.state === 'recording'
+    try {
+      this.recorder.resume()
+      if (this.currentRecorderState() === 'recording') this.completeBufferingPause()
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  isPausedForBuffering(): boolean {
+    return this.bufferingPauseContextTime !== null
   }
 
   stop(): Promise<void> {
@@ -125,6 +173,7 @@ export class ForegroundRecorder {
 
   private bindEvents(): void {
     this.recorder.addEventListener('dataavailable', (event) => {
+      if (this.failed) return
       if (event.data.size === 0) return
       const sequence = this.sequence++
       this.snapshot = {
@@ -142,6 +191,16 @@ export class ForegroundRecorder {
       const candidate = event as Event & { error?: DOMException }
       void this.fail(candidate.error ?? new Error('MediaRecorder error.'))
     })
+    this.recorder.addEventListener('pause', () => {
+      if (!this.bufferingResumeRequested || this.recorder.state !== 'paused') return
+      try {
+        this.recorder.resume()
+        if (this.currentRecorderState() === 'recording') this.completeBufferingPause()
+      } catch (error) {
+        void this.fail(error)
+      }
+    })
+    this.recorder.addEventListener('resume', () => this.completeBufferingPause())
 
     const onVisibility = () => {
       if (this.snapshot.phase === 'recording' && this.documentValue?.visibilityState === 'hidden') {
@@ -195,7 +254,8 @@ export class ForegroundRecorder {
       return Promise.reject(new DOMException('Recorder is not recording.', 'InvalidStateError'))
     }
 
-    this.patch({ phase: 'finalizing', partialReason: reason })
+    this.stopContextTime = this.clock.currentTime
+    this.patch({ phase: 'finalizing', partialReason: reason, durationSeconds: this.duration() })
     this.finalizePromise = new Promise<void>((resolve) => {
       this.recorder.addEventListener(
         'stop',
@@ -231,13 +291,50 @@ export class ForegroundRecorder {
   }
 
   private async fail(error: unknown): Promise<void> {
+    if (this.failed) return
+    this.failed = true
+    this.stopContextTime ??= this.clock.currentTime
     this.patch({ phase: 'error', error: errorText(error) })
+    if (this.recorder.state !== 'inactive') {
+      try {
+        this.recorder.stop()
+      } catch {
+        // The recorder may already be transitioning to inactive after its error event.
+      }
+    }
     await this.sink.abort(error).catch(() => undefined)
+    this.dispose()
+  }
+
+  private completeBufferingPause(): void {
+    if (this.bufferingPauseContextTime !== null) {
+      this.completedBufferingPauseSeconds += Math.max(
+        0,
+        this.clock.currentTime - this.bufferingPauseContextTime,
+      )
+    }
+    this.bufferingPauseContextTime = null
+    this.bufferingResumeRequested = false
+  }
+
+  private currentRecorderState(): RecordingState {
+    return this.recorder.state
   }
 
   private duration(): number {
     if (this.startContextTime === null) return 0
-    return Math.max(0, this.clock.currentTime - this.startContextTime)
+    const endContextTime = this.stopContextTime ?? this.clock.currentTime
+    const activeBufferingPauseSeconds =
+      this.bufferingPauseContextTime === null
+        ? 0
+        : Math.max(0, endContextTime - this.bufferingPauseContextTime)
+    return Math.max(
+      0,
+      endContextTime -
+        this.startContextTime -
+        this.completedBufferingPauseSeconds -
+        activeBufferingPauseSeconds,
+    )
   }
 
   private patch(patch: Partial<RecordingSnapshot>): void {

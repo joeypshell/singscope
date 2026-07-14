@@ -1,5 +1,6 @@
 import { DEFAULT_YIN_CONFIG, YinPitchDetector } from '../audio/dsp/yin'
 import { resampleLinear } from '../audio/dsp/resample'
+import type { PitchEstimateReason } from '../audio/dsp/contracts'
 
 interface AnalyzeMessage {
   readonly type: 'analyze'
@@ -25,6 +26,7 @@ interface Candidate {
   readonly peak: number
   readonly analysisGap: boolean
   readonly scorable: boolean
+  readonly reason: PitchEstimateReason
 }
 
 const TARGET_RATE = DEFAULT_YIN_CONFIG.internalSampleRateHz
@@ -58,6 +60,7 @@ function analyze(message: AnalyzeMessage): readonly Candidate[] {
       peak: estimate.peak,
       analysisGap: false,
       scorable: estimate.frequencyHz !== null,
+      reason: estimate.reason,
     })
     consumed += HOP_SIZE
   }

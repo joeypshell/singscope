@@ -50,6 +50,7 @@ export interface PracticeView {
   readonly selectedMicrophoneId: string | null
   readonly appliedSettings: readonly string[]
   readonly failureMessage: string | null
+  readonly noticeMessage: string | null
   readonly storageHealth: string
   readonly guideToneEnabled: boolean
   readonly captureProfile: CaptureProfile
@@ -121,6 +122,10 @@ export function PracticeScreen({
           actionLabel="Tap to retry"
           onAction={onStart}
         />
+      ) : null}
+
+      {model.noticeMessage ? (
+        <StatusBanner tone="info" title="Playback buffering" message={model.noticeMessage} />
       ) : null}
 
       {!recordingAvailable ? (

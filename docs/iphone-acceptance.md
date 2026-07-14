@@ -24,6 +24,7 @@ Record device model, iOS build, app commit SHA, audio route, available storage a
 
 - [ ] Complete a five-minute take and repeated-loop/separate-take run without losing audio/pitch chunks.
 - [ ] Verify countdown, guide tone, loop boundaries, seek/re-anchor, MIDI alignment, manual latency offset, and 1× playback.
+- [ ] Use a reference shorter than the three-second countdown; confirm it is re-primed and all notes are audible after countdown. Trigger a brief buffer pause and confirm it recovers without a false retry; confirm a persistent stall finalizes a recoverable partial take.
 - [ ] Enable slower rates only if `preservesPitch` works without choppy output on this device/route.
 - [ ] Measure microphone-to-display latency and verify the chart sustains at least 30 FPS (DPR capped at 2).
 
@@ -31,6 +32,7 @@ Record device model, iOS build, app commit SHA, audio route, available storage a
 
 - [ ] Import backing audio, isolated monophonic audio, MIDI format 0/1, a malformed/oversized example, and a project backup.
 - [ ] In both Safari and the installed Home Screen app, record a short sung, hummed, whistled, and single-note-instrument melody; run local analysis; verify piano-note names/timings; correct the result with touch and exact inputs; then save and relaunch.
+- [ ] In **Check what SingScope heard**, play the exact uploaded/recorded source and compare audible note changes with the accepted contour and editable note blocks across low, middle, and high supported pitches.
 - [ ] Try a chord/polyphonic or mixed-song source and confirm the product makes no transcription or vocal-isolation claim and continues to label generated notes as estimates requiring review.
 - [ ] Select a melody track; transpose/align it; correct overlap with both touch controls and exact form inputs.
 - [ ] Review raw/smoothed and pitch/cents views; inspect points, gaps, low-confidence ranges and missed entrances.

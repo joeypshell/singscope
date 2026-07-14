@@ -52,6 +52,7 @@ export function createDemoTake(notes: readonly AppTargetNote[], label = 'Demo ta
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
     label,
+    projectStartSeconds: 0,
     durationSeconds: 7.5,
     audioAssetId: null,
     audioMimeType: null,

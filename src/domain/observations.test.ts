@@ -55,6 +55,23 @@ describe('target observations', () => {
     expect(lookupTargetAtTime(targetSet, 0.25).midiNote).toBeNull()
   })
 
+  it('does not score a hidden analyzed contour outside the editable note list', () => {
+    const withHiddenContour: TargetSet = {
+      ...targetSet,
+      kind: 'analyzed',
+      pitchPoints: [
+        { timeSeconds: 1.4, frequencyHz: 523.25, midiNote: 72, confidence: 0.98 },
+        { timeSeconds: 1.5, frequencyHz: 523.25, midiNote: 72, confidence: 0.98 },
+      ],
+    }
+    expect(lookupTargetAtTime(withHiddenContour, 2)).toEqual({
+      midiNote: null,
+      targetNoteId: null,
+      scorable: false,
+      reason: 'outside-target',
+    })
+  })
+
   it('flags every member of a note overlap as unscorable', () => {
     const notes = withOverlapScoringFlags([
       { ...baseNote, endSeconds: 2 },

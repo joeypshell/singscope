@@ -5,11 +5,13 @@ import {
   PcmCapturePipeline,
   ReferencePlayer,
   createBrowserWakeLockAdapter,
+  pitchCandidateGapReason,
   requestMicrophone,
   selectRecorderMimeType,
   stopMediaStream,
   type CaptureProfile,
   type CaptureSettings,
+  type PlaybackFailure,
   type PlaybackRate,
   type RecordingInterruption,
 } from '../audio/runtime'
@@ -28,6 +30,7 @@ interface ControllerState {
   readonly countdownSeconds: number
   readonly points: readonly AppPitchPoint[]
   readonly failureMessage: string | null
+  readonly noticeMessage: string | null
   readonly level: number
   readonly appliedSettings: readonly string[]
   readonly microphoneInputs: readonly { deviceId: string; label: string }[]
@@ -48,6 +51,8 @@ interface ActiveRuntime {
   assetId: string | null
   recordingMimeType: string | null
   recordingStartSeconds: number
+  recordingStartContextTime: number | null
+  attemptId: number
 }
 
 function interruptionForWriter(reason: RecordingInterruption | null): InterruptionReason {
@@ -102,6 +107,7 @@ export function usePracticeController(
     countdownSeconds: 0,
     points: [],
     failureMessage: null,
+    noticeMessage: null,
     level: 0,
     appliedSettings: project.isSyntheticDemo
       ? ['Synthetic input trace · microphone not requested']
@@ -119,6 +125,13 @@ export function usePracticeController(
   const loopEnd = useRef(project.referenceDurationSeconds)
   const finalizing = useRef<Promise<void> | null>(null)
   const recorderStarting = useRef<Promise<void> | null>(null)
+  const pendingMicrophone = useRef<ReturnType<typeof requestMicrophone> | null>(null)
+  const playbackAborted = useRef(false)
+  const attemptGeneration = useRef(0)
+  const playbackFailureHandler = useRef<(failure: PlaybackFailure | null) => void>(() => undefined)
+  const recordingFailureHandler = useRef<
+    (active: ActiveRuntime, attemptId: number, message: string) => void
+  >(() => undefined)
   const saved = useRef(false)
   const mounted = useRef(true)
 
@@ -157,6 +170,9 @@ export function usePracticeController(
       }
       runtime.current = null
       recorderStarting.current = null
+      const pending = pendingMicrophone.current
+      pendingMicrophone.current = null
+      void pending?.then(({ stream }) => stopMediaStream(stream)).catch(() => undefined)
     }
   }, [project])
 
@@ -182,14 +198,37 @@ export function usePracticeController(
       assetId: null,
       recordingMimeType: null,
       recordingStartSeconds: 0,
+      recordingStartContextTime: null,
+      attemptId: 0,
     }
     player.subscribe((snapshot) => {
       if (!mounted.current) return
+      if (snapshot.phase === 'retry') playbackFailureHandler.current(snapshot.failure)
+      const active = runtime.current
+      const recorder = active?.recorder ?? null
+      if (snapshot.phase === 'playing' && recorder?.getSnapshot().phase === 'recording') {
+        if (snapshot.message !== null && !recorder.pauseForBuffering()) {
+          playbackFailureHandler.current('media-stalled')
+        } else if (
+          snapshot.message === null &&
+          recorder.isPausedForBuffering() &&
+          !recorder.resumeAfterBuffering()
+        ) {
+          playbackFailureHandler.current('media-stalled')
+        }
+      }
       setState((current) => ({
         ...current,
         countdownSeconds: snapshot.countdownRemainingSeconds,
-        failureMessage: snapshot.message,
-        phase: snapshot.phase === 'retry' ? 'retry' : current.phase,
+        failureMessage:
+          snapshot.phase === 'retry'
+            ? current.phase === 'finalizing'
+              ? current.failureMessage
+              : snapshot.message
+            : null,
+        noticeMessage: snapshot.phase === 'retry' ? null : snapshot.message,
+        phase:
+          snapshot.phase === 'retry' && current.phase !== 'finalizing' ? 'retry' : current.phase,
       }))
     })
     runtime.current = value
@@ -213,14 +252,23 @@ export function usePracticeController(
           }
           const endingSeconds = active.player.currentProjectTime() ?? loopEnd.current
           active.player.pause()
-          const durationSeconds = Math.max(
+          const timelineDurationSeconds = Math.max(
             0.02,
             Math.min(loopEnd.current, endingSeconds) - active.recordingStartSeconds,
+          )
+          const recordedDurationSeconds = active.recorder?.getSnapshot().durationSeconds ?? 0
+          const durationSeconds = Math.max(
+            0.02,
+            Math.min(
+              15 * 60,
+              recordedDurationSeconds > 0 ? recordedDurationSeconds : timelineDurationSeconds,
+            ),
           )
           const take: AppTake = {
             id: crypto.randomUUID(),
             createdAt: new Date().toISOString(),
             label: `Take ${project.takes.length + 1}`,
+            projectStartSeconds: active.recordingStartSeconds,
             durationSeconds,
             audioAssetId: active.assetId,
             audioMimeType: active.recordingMimeType,
@@ -238,11 +286,101 @@ export function usePracticeController(
     [onTakeSaved, project.takes.length],
   )
 
-  const beginRecorder = useCallback(
-    async (active: ActiveRuntime, stream: MediaStream, settings: CaptureSettings | null) => {
+  playbackFailureHandler.current = (failure) => {
+    if (playbackAborted.current) return
+    playbackAborted.current = true
+    attemptGeneration.current += 1
+    setState((current) => ({
+      ...current,
+      phase: current.phase === 'recording' ? 'finalizing' : 'retry',
+      failureMessage:
+        current.phase === 'recording'
+          ? 'Reference audio paused; saving this take as a recoverable partial.'
+          : current.failureMessage,
+    }))
+    if (animationFrame.current !== null) {
+      cancelAnimationFrame(animationFrame.current)
+      animationFrame.current = null
+    }
+    const pending = pendingMicrophone.current
+    pendingMicrophone.current = null
+    void pending?.then(({ stream }) => stopMediaStream(stream)).catch(() => undefined)
+    const active = runtime.current
+    const failedRecorder = active?.recorder ?? null
+    if (failedRecorder?.getSnapshot().phase === 'recording') {
+      void (async () => {
+        const reason: RecordingInterruption =
+          failure === 'context-interrupted'
+            ? 'audio-context-interrupted'
+            : failure === 'media-ended'
+              ? 'reference-ended'
+              : failure === 'route-lost'
+                ? 'route-lost'
+                : 'reference-stalled'
+        await failedRecorder.interrupt(reason)
+      })()
+    } else {
+      active?.pipeline?.dispose()
+      if (active) active.pipeline = null
+      if (active?.stream) {
+        stopMediaStream(active.stream)
+        active.stream = null
+      }
+      failedRecorder?.dispose()
+      if (active?.recorder === failedRecorder) active.recorder = null
+      const failedWriter = active?.writer ?? null
+      if (active?.writer === failedWriter) active.writer = null
+      void failedWriter?.abort().catch(() => undefined)
+    }
+  }
+
+  recordingFailureHandler.current = (active, attemptId, message) => {
+    if (
+      playbackAborted.current ||
+      active.attemptId !== attemptId ||
+      attemptGeneration.current !== attemptId
+    ) {
+      return
+    }
+    playbackAborted.current = true
+    attemptGeneration.current += 1
+    if (animationFrame.current !== null) {
+      cancelAnimationFrame(animationFrame.current)
+      animationFrame.current = null
+    }
+    active.player.pause()
+    active.pipeline?.dispose()
+    active.pipeline = null
+    if (active.stream) stopMediaStream(active.stream)
+    active.stream = null
+    active.recorder?.dispose()
+    active.recorder = null
+    // ForegroundRecorder owns aborting its sink for native and start failures.
+    active.writer = null
+    active.assetId = null
+    active.recordingMimeType = null
+    active.recordingStartContextTime = null
+    if (mounted.current) {
+      setState((current) => ({
+        ...current,
+        phase: 'retry',
+        failureMessage: message,
+        noticeMessage: null,
+      }))
+    }
+  }
+
+  const prepareRecorder = useCallback(
+    async (
+      active: ActiveRuntime,
+      stream: MediaStream,
+      settings: CaptureSettings | null,
+      attemptId: number,
+    ): Promise<boolean> => {
       const mimeType = selectRecorderMimeType() ?? undefined
       const assetId = crypto.randomUUID()
       const store = await getBinaryStore()
+      if (attemptGeneration.current !== attemptId) return false
       const writer = new RecordingAssetWriter(
         getDatabase(),
         store,
@@ -251,10 +389,14 @@ export function usePracticeController(
         mimeType ?? 'audio/mp4',
       )
       await writer.begin()
+      if (attemptGeneration.current !== attemptId) {
+        await writer.abort()
+        return false
+      }
+      active.attemptId = attemptId
       active.assetId = assetId
       active.recordingMimeType = mimeType ?? 'audio/mp4'
       active.writer = writer
-      active.recordingStartSeconds = active.player.currentProjectTime() ?? 0
       const recorder = new ForegroundRecorder({
         stream,
         clock: active.context,
@@ -266,7 +408,7 @@ export function usePracticeController(
             await writer.appendOneSecondChunk(chunk)
           },
           commit: async ({ mimeType: actualMime, partialReason }) => {
-            active.recordingMimeType = actualMime
+            if (active.attemptId === attemptId) active.recordingMimeType = actualMime
             const reason = interruptionForWriter(partialReason)
             if (reason === 'none') await writer.finalize(false, reason)
             else await writer.finalizeInterrupted(reason)
@@ -276,12 +418,16 @@ export function usePracticeController(
       })
       recorder.subscribe((snapshot) => {
         if (snapshot.phase === 'complete') void finishTake(snapshot.partialReason)
-        if (snapshot.phase === 'error' && mounted.current) {
-          setState((current) => ({ ...current, phase: 'retry', failureMessage: snapshot.error }))
+        if (snapshot.phase === 'error') {
+          recordingFailureHandler.current(
+            active,
+            attemptId,
+            snapshot.error ?? 'Recording failed. Tap to retry.',
+          )
         }
       })
       active.recorder = recorder
-      recorder.startFromGesture()
+      return true
     },
     [finishTake, project.id],
   )
@@ -290,11 +436,156 @@ export function usePracticeController(
     (
       active: ActiveRuntime,
       microphonePromise: Promise<Awaited<ReturnType<typeof requestMicrophone>>> | null,
+      loopStartSeconds: number,
+      attemptId: number,
     ) => {
       const mock = project.isSyntheticDemo ? createMockPitchTrace(project.notes) : null
       let mockIndex = 0
       let audibleStarted = false
+      let captureStarted = false
+      let captureReady = false
+      let captureFailed = false
+      let mockDestination: MediaStreamAudioDestinationNode | null = null
+      const isCurrentAttempt = () =>
+        attemptGeneration.current === attemptId && !playbackAborted.current
+
+      const captureFailure = (error: unknown) => {
+        if (!isCurrentAttempt()) return
+        captureFailed = true
+        playbackAborted.current = true
+        attemptGeneration.current += 1
+        active.player.pause()
+        active.pipeline?.dispose()
+        active.pipeline = null
+        if (active.stream) {
+          stopMediaStream(active.stream)
+          active.stream = null
+        }
+        void active.writer?.abort().catch(() => undefined)
+        setState((current) => ({
+          ...current,
+          phase: 'retry',
+          failureMessage:
+            error instanceof DOMException && error.name === 'NotAllowedError'
+              ? 'Microphone permission was denied. Allow it in Safari settings, then tap to retry.'
+              : error instanceof Error
+                ? error.message
+                : 'Microphone could not start.',
+        }))
+      }
+
+      const prepareCapture = async () => {
+        if (mock) {
+          const destination = active.context.createMediaStreamDestination()
+          if (!isCurrentAttempt()) {
+            stopMediaStream(destination.stream)
+            return
+          }
+          mockDestination = destination
+          active.stream = destination.stream
+          captureReady = await prepareRecorder(active, destination.stream, null, attemptId)
+          return
+        }
+        if (!microphonePromise) throw new Error('Microphone capture is unavailable.')
+        const { stream, settings, inputs } = await microphonePromise
+        if (pendingMicrophone.current === microphonePromise) pendingMicrophone.current = null
+        if (!isCurrentAttempt()) {
+          stopMediaStream(stream)
+          return
+        }
+        const source = active.context.createMediaStreamSource(stream)
+        const pipeline = await PcmCapturePipeline.create(active.context, source, {
+          onLevel: (rms, peak) => {
+            if (!captureStarted || active.recorder?.isPausedForBuffering() || !isCurrentAttempt()) {
+              return
+            }
+            setState((current) => ({ ...current, level: Math.max(rms * 5, peak) }))
+          },
+          onGap: (contextTimeSeconds) => {
+            if (
+              !captureStarted ||
+              active.recordingStartContextTime === null ||
+              contextTimeSeconds < active.recordingStartContextTime ||
+              active.recorder?.isPausedForBuffering() ||
+              !isCurrentAttempt()
+            ) {
+              return
+            }
+            const timeSeconds = active.player.currentProjectTime(contextTimeSeconds)
+            points.current.push({
+              timeSeconds:
+                timeSeconds ??
+                (Number.isFinite(active.element.currentTime) ? active.element.currentTime : 0),
+              contextTimeSeconds,
+              candidateHz: null,
+              frequencyHz: null,
+              midiNote: null,
+              confidence: null,
+              rms: 0,
+              peak: 0,
+              gapReason: timeSeconds === null ? 'timeline-gap' : 'queue-overflow',
+              detectorVersion: 'yin-24k-v1',
+            })
+          },
+          onPitchCandidate: (candidate) => {
+            if (
+              !captureStarted ||
+              active.recordingStartContextTime === null ||
+              candidate.contextTimeSeconds < active.recordingStartContextTime ||
+              active.recorder?.isPausedForBuffering() ||
+              !isCurrentAttempt()
+            ) {
+              return
+            }
+            const timeSeconds = active.player.currentProjectTime(candidate.contextTimeSeconds)
+            const frequencyHz =
+              timeSeconds !== null && candidate.scorable && !candidate.analysisGap
+                ? candidate.frequencyHz
+                : null
+            points.current.push({
+              timeSeconds:
+                timeSeconds ??
+                (Number.isFinite(active.element.currentTime) ? active.element.currentTime : 0),
+              contextTimeSeconds: candidate.contextTimeSeconds,
+              candidateHz: candidate.frequencyHz,
+              frequencyHz,
+              midiNote: frequencyHz === null ? null : frequencyToMidi(frequencyHz),
+              confidence: candidate.confidence,
+              rms: candidate.rms,
+              peak: candidate.peak,
+              gapReason: pitchCandidateGapReason(
+                candidate,
+                timeSeconds !== null,
+                frequencyHz !== null,
+              ),
+              detectorVersion: 'yin-24k-v1',
+            })
+          },
+        })
+        if (!isCurrentAttempt()) {
+          pipeline.dispose()
+          stopMediaStream(stream)
+          return
+        }
+        active.pipeline = pipeline
+        active.stream = stream
+        setState((current) => ({
+          ...current,
+          microphoneInputs: inputs,
+          selectedMicrophoneId: settings.deviceId,
+          appliedSettings: settingLabels(settings),
+        }))
+        captureReady = await prepareRecorder(active, stream, settings, attemptId)
+        if (!captureReady) {
+          pipeline.dispose()
+          stopMediaStream(stream)
+        }
+      }
+
+      recorderStarting.current = prepareCapture().catch(captureFailure)
+
       const tick = () => {
+        if (!isCurrentAttempt() || captureFailed) return
         const remaining = active.player.updateCountdown()
         if (remaining > 0) {
           if (mounted.current)
@@ -303,114 +594,51 @@ export function usePracticeController(
           return
         }
         if (!audibleStarted) {
+          if (!captureReady) {
+            if (mounted.current) {
+              setState((current) => ({ ...current, phase: 'countdown', countdownSeconds: 0 }))
+            }
+            animationFrame.current = requestAnimationFrame(tick)
+            return
+          }
+          if (!active.player.beginAudible(loopStartSeconds)) {
+            if (active.player.getSnapshot().phase !== 'retry') {
+              animationFrame.current = requestAnimationFrame(tick)
+            }
+            return
+          }
+          const recorder = active.recorder
+          if (recorder?.getSnapshot().phase !== 'ready') {
+            captureFailure(new Error('Recorder preparation did not complete.'))
+            return
+          }
+          active.recordingStartSeconds = loopStartSeconds
+          const recordingStartContextTime = active.context.currentTime
+          try {
+            recorder.startFromGesture()
+          } catch (error) {
+            recordingFailureHandler.current(
+              active,
+              attemptId,
+              error instanceof Error ? error.message : 'Recording could not start.',
+            )
+            return
+          }
+          active.recordingStartContextTime = recordingStartContextTime
+          captureStarted = true
           audibleStarted = true
-          const startSeconds = active.player.currentProjectTime() ?? 0
-          active.player.beginAudible(startSeconds)
           setState((current) => ({ ...current, phase: 'recording', countdownSeconds: 0 }))
-          if (mock) {
-            const destination = active.context.createMediaStreamDestination()
+          if (mock && mockDestination) {
             for (const note of project.notes) {
               const oscillator = active.context.createOscillator()
               const gain = active.context.createGain()
               oscillator.frequency.value = 440 * 2 ** ((note.midiNote - 69) / 12)
               gain.gain.value = 0.18
-              oscillator.connect(gain).connect(destination)
+              oscillator.connect(gain).connect(mockDestination)
               const now = active.context.currentTime
-              oscillator.start(now + Math.max(0, note.startSeconds - startSeconds))
-              oscillator.stop(now + Math.max(0.05, note.endSeconds - startSeconds))
+              oscillator.start(now + Math.max(0, note.startSeconds - loopStartSeconds))
+              oscillator.stop(now + Math.max(0.05, note.endSeconds - loopStartSeconds))
             }
-            active.stream = destination.stream
-            recorderStarting.current = beginRecorder(active, destination.stream, null).catch(
-              (error: unknown) => {
-                setState((current) => ({
-                  ...current,
-                  phase: 'retry',
-                  failureMessage:
-                    error instanceof Error ? error.message : 'Synthetic recording failed.',
-                }))
-              },
-            )
-          } else if (microphonePromise) {
-            recorderStarting.current = microphonePromise
-              .then(async ({ stream, settings, inputs }) => {
-                active.stream = stream
-                setState((current) => ({
-                  ...current,
-                  microphoneInputs: inputs,
-                  selectedMicrophoneId: settings.deviceId,
-                  appliedSettings: settingLabels(settings),
-                }))
-                const source = active.context.createMediaStreamSource(stream)
-                active.pipeline = await PcmCapturePipeline.create(active.context, source, {
-                  onLevel: (rms, peak) =>
-                    setState((current) => ({ ...current, level: Math.max(rms * 5, peak) })),
-                  onGap: (contextTimeSeconds) => {
-                    const timeSeconds = active.player.currentProjectTime(contextTimeSeconds)
-                    points.current.push({
-                      timeSeconds:
-                        timeSeconds ??
-                        (Number.isFinite(active.element.currentTime)
-                          ? active.element.currentTime
-                          : 0),
-                      contextTimeSeconds,
-                      candidateHz: null,
-                      frequencyHz: null,
-                      midiNote: null,
-                      confidence: null,
-                      rms: 0,
-                      peak: 0,
-                      gapReason: timeSeconds === null ? 'timeline-gap' : 'queue-overflow',
-                      detectorVersion: 'yin-24k-v1',
-                    })
-                  },
-                  onPitchCandidate: (candidate) => {
-                    const timeSeconds = active.player.currentProjectTime(
-                      candidate.contextTimeSeconds,
-                    )
-                    const frequencyHz =
-                      timeSeconds !== null && candidate.scorable && !candidate.analysisGap
-                        ? candidate.frequencyHz
-                        : null
-                    points.current.push({
-                      timeSeconds:
-                        timeSeconds ??
-                        (Number.isFinite(active.element.currentTime)
-                          ? active.element.currentTime
-                          : 0),
-                      contextTimeSeconds: candidate.contextTimeSeconds,
-                      candidateHz: candidate.frequencyHz,
-                      frequencyHz,
-                      midiNote: frequencyHz === null ? null : frequencyToMidi(frequencyHz),
-                      confidence: candidate.confidence,
-                      rms: candidate.rms,
-                      peak: candidate.peak,
-                      gapReason:
-                        timeSeconds === null
-                          ? 'timeline-gap'
-                          : frequencyHz === null
-                            ? candidate.frequencyHz === null
-                              ? 'silence'
-                              : 'below-confidence'
-                            : null,
-                      detectorVersion: 'yin-24k-v1',
-                    })
-                  },
-                })
-                await beginRecorder(active, stream, settings)
-              })
-              .catch((error: unknown) => {
-                active.player.pause()
-                setState((current) => ({
-                  ...current,
-                  phase: 'retry',
-                  failureMessage:
-                    error instanceof DOMException && error.name === 'NotAllowedError'
-                      ? 'Microphone permission was denied. Allow it in Safari settings, then tap to retry.'
-                      : error instanceof Error
-                        ? error.message
-                        : 'Microphone could not start.',
-                }))
-              })
           }
         }
 
@@ -452,7 +680,6 @@ export function usePracticeController(
         }
         if (currentSeconds >= loopEnd.current) {
           void (async () => {
-            await recorderStarting.current
             if (active.recorder?.getSnapshot().phase === 'recording') await active.recorder.stop()
             else await finishTake(null)
           })()
@@ -462,25 +689,35 @@ export function usePracticeController(
       }
       animationFrame.current = requestAnimationFrame(tick)
     },
-    [beginRecorder, finishTake, project.isSyntheticDemo, project.notes, state.currentSeconds],
+    [finishTake, prepareRecorder, project.isSyntheticDemo, project.notes, state.currentSeconds],
   )
 
   const start = useCallback(
     (loopStartSeconds: number, loopEndSeconds: number, guideToneEnabled = false) => {
       try {
         saved.current = false
+        playbackAborted.current = false
         points.current = []
         loopEnd.current = loopEndSeconds
         const active = ensureRuntime()
+        const existingRecorderPhase = active.recorder?.getSnapshot().phase
+        if (existingRecorderPhase === 'recording' || existingRecorderPhase === 'finalizing') {
+          setState((current) => ({ ...current, phase: 'finalizing' }))
+          return
+        }
+        const attemptId = ++attemptGeneration.current
+        active.recordingStartContextTime = null
         const microphonePromise = project.isSyntheticDemo
           ? null
           : requestMicrophone({
               profile: state.captureProfile,
               ...(state.selectedMicrophoneId ? { deviceId: state.selectedMicrophoneId } : {}),
             })
+        pendingMicrophone.current = microphonePromise
         // This call intentionally starts synchronously inside the click handler.
         const activation = active.player.activateFromGesture({
           loopStartSeconds,
+          loopEndSeconds,
           countdownSeconds: 3,
           playbackRate: state.playbackRate,
         })
@@ -507,11 +744,14 @@ export function usePracticeController(
           ...current,
           phase: 'countdown',
           failureMessage: null,
+          noticeMessage: null,
           points: [],
         }))
         void activation
-          .then(() => startClock(active, microphonePromise))
+          .then(() => startClock(active, microphonePromise, loopStartSeconds, attemptId))
           .catch((error: unknown) => {
+            if (attemptGeneration.current !== attemptId) return
+            if (error instanceof DOMException && error.name === 'AbortError') return
             setState((current) => ({
               ...current,
               phase: 'retry',
@@ -540,15 +780,34 @@ export function usePracticeController(
   )
 
   const stop = useCallback(async () => {
-    if (animationFrame.current !== null) cancelAnimationFrame(animationFrame.current)
+    attemptGeneration.current += 1
+    playbackAborted.current = true
+    if (animationFrame.current !== null) {
+      cancelAnimationFrame(animationFrame.current)
+      animationFrame.current = null
+    }
+    const pending = pendingMicrophone.current
+    pendingMicrophone.current = null
+    void pending?.then(({ stream }) => stopMediaStream(stream)).catch(() => undefined)
     const active = runtime.current
     if (!active) return
-    await recorderStarting.current
+    active.player.pause()
     if (active.recorder?.getSnapshot().phase === 'recording') {
       await active.recorder.stop()
       await finishTake(null)
+    } else if (active.recorder?.getSnapshot().phase === 'finalizing') {
+      await finalizing.current
     } else {
-      active.player.pause()
+      active.pipeline?.dispose()
+      active.pipeline = null
+      active.recorder?.dispose()
+      active.recorder = null
+      if (active.stream) stopMediaStream(active.stream)
+      active.stream = null
+      await active.writer?.abort().catch(() => undefined)
+      active.writer = null
+      active.assetId = null
+      recorderStarting.current = null
       setState((current) => ({ ...current, phase: 'idle' }))
     }
   }, [finishTake])

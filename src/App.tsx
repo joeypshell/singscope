@@ -47,7 +47,14 @@ import { useAppStore } from './app/store'
 import type { AppProject, AppTargetNote, AppTargetPitchPoint } from './app/types'
 import { currentPitchLabel, usePracticeController } from './app/use-practice-controller'
 import { useReviewController } from './app/use-review-controller'
-import { inspectedPoint, metricDisplays, projectScene, takeMetrics } from './app/view-models'
+import {
+  inspectedPoint,
+  metricDisplays,
+  projectScene,
+  reviewScene,
+  takeMetrics,
+  targetAnalysisScene,
+} from './app/view-models'
 
 const ONBOARDING_KEY = 'singscope:onboarding:v1'
 
@@ -272,6 +279,14 @@ interface SetupState {
   readonly error: string | null
 }
 
+function inferredTargetSourceDuration(project: AppProject): number {
+  return Math.max(
+    0,
+    ...project.targetPitchPoints.map((point) => point.timeSeconds + 0.032),
+    ...project.notes.map((note) => note.endSeconds),
+  )
+}
+
 function initialSetup(project: AppProject | null): SetupState {
   const now = new Date().toISOString()
   return {
@@ -293,7 +308,9 @@ function initialSetup(project: AppProject | null): SetupState {
       project.targetSourceAssetId !== null &&
       project.targetSourceAssetId === project.referenceAssetId
         ? project.referenceDurationSeconds
-        : 0,
+        : project
+          ? inferredTargetSourceDuration(project)
+          : 0,
     targetSourceFile: null,
     targetPitchPoints: project?.targetPitchPoints ?? [],
     notes: project?.notes ?? [],
@@ -486,6 +503,15 @@ function setupValidation(state: SetupState): string | null {
     )
   )
     return 'Every target note needs a finite start and a later end.'
+  if (
+    state.notes.some(
+      (note) =>
+        note.midiNote + state.transpositionSemitones < 0 ||
+        note.midiNote + state.transpositionSemitones > 127,
+    )
+  ) {
+    return 'Transpose moves at least one target outside the supported MIDI piano range (0–127).'
+  }
   return null
 }
 
@@ -512,12 +538,37 @@ function SetupRoute() {
   const recordedCaptureRef = useRef<RecordedSourceCapture | null>(null)
   const recordedCaptureUnsubscribeRef = useRef<(() => void) | null>(null)
   const recordedCaptureGenerationRef = useRef(0)
+  const [analysisSourceUrl, setAnalysisSourceUrl] = useState<string | null>(null)
   useEffect(() => {
     stateRef.current = state
   }, [state])
   useEffect(() => {
     useRecordedSourceAsReferenceRef.current = useRecordedSourceAsReference
   }, [useRecordedSourceAsReference])
+  useEffect(() => {
+    const controller = new AbortController()
+    const isAborted = () => controller.signal.aborted
+    let objectUrl: string | null = null
+    void (async () => {
+      await Promise.resolve()
+      if (isAborted()) return
+      setAnalysisSourceUrl(null)
+      const source =
+        state.targetSourceFile ??
+        (state.targetSourceAssetId
+          ? await (await getBinaryStore()).read(state.targetSourceAssetId)
+          : null)
+      if (!source || isAborted()) return
+      objectUrl = URL.createObjectURL(source)
+      setAnalysisSourceUrl(objectUrl)
+    })().catch(() => {
+      if (!isAborted()) setAnalysisSourceUrl(null)
+    })
+    return () => {
+      controller.abort()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [state.targetSourceAssetId, state.targetSourceFile])
   const patch = (value: Partial<SetupState>) => setState((current) => ({ ...current, ...value }))
   const validation = setupValidation(state)
 
@@ -752,6 +803,20 @@ function SetupRoute() {
         midiTracks: state.midiTracks,
         selectedMidiTrackId: state.selectedMidiTrackId,
         recordedMelody,
+        analysisSourceUrl,
+        analysisScene:
+          state.targetMode === 'isolated-vocal' && state.targetPitchPoints.length > 0
+            ? targetAnalysisScene(
+                {
+                  notes: state.notes,
+                  targetPitchPoints: state.targetPitchPoints,
+                  transpositionSemitones: state.transpositionSemitones,
+                  alignmentSeconds: state.alignmentSeconds,
+                  timingOffsetSeconds: 0,
+                },
+                state.targetSourceDurationSeconds || state.referenceDurationSeconds,
+              )
+            : undefined,
       }}
       onBack={() => navigate('/')}
       onTitleChange={(title) => patch({ title, error: null })}
@@ -1126,6 +1191,7 @@ function PracticeRoute() {
         selectedMicrophoneId: controller.selectedMicrophoneId,
         appliedSettings: controller.appliedSettings,
         failureMessage: controller.failureMessage,
+        noticeMessage: controller.noticeMessage,
         storageHealth:
           storageState === 'ready'
             ? 'OPFS and IndexedDB passed their probes. Keep a current backup.'
@@ -1208,6 +1274,7 @@ function ReviewRoute() {
         id: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
         label: 'Missing',
+        projectStartSeconds: 0,
         durationSeconds: 0,
         audioAssetId: null,
         audioMimeType: null,
@@ -1217,11 +1284,10 @@ function ReviewRoute() {
   )
   if (!project || !take) return <Navigate to="/" replace />
   const report = takeMetrics(project, take)
-  const scene = projectScene(
+  const scene = reviewScene(
     project,
-    take.points,
+    take,
     controller.currentSeconds,
-    true,
     controller.pitchMode,
     controller.zoomLevel,
   )
@@ -1339,6 +1405,7 @@ function AppRoutes() {
           id: crypto.randomUUID(),
           createdAt: asset.createdAt,
           label: `Take ${project.takes.length + 1} (recovered)`,
+          projectStartSeconds: 0,
           durationSeconds,
           audioAssetId: asset.logicalAssetId,
           audioMimeType: asset.mimeType,

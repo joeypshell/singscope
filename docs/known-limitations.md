@@ -10,6 +10,7 @@
 - 0.5×, 0.75×, and 0.9× appear only after device capability/quality verification; 1× is always supported.
 - MediaRecorder format is runtime-selected for practice takes and direct melody sources. iPhone usually provides encoded MP4/AAC, but actual browser support is authoritative.
 - Direct **Record melody** analysis is capped at 60 seconds and 8 MiB and is intended for a short sing, hum, whistle, or single-note instrument phrase. YIN is monophonic and may misread breath noise, consonants, vibrato extremes, chords/polyphony, room echo, accompaniment bleed, or tones near range boundaries. Low-confidence ranges are not scored, and every candidate note requires review.
+- The setup verification chart can replay the exact analyzed source and shows the accepted source contour, confidence breaks, and editable note blocks. This target-analysis schema does not yet persist rejected raw candidates, RMS/peak, or per-gap reasons; the UI discloses that instead of inventing detail. Practice takes do retain their raw candidates and gap reasons.
 - Isolated-source whole-file analysis is memory-budgeted. A bounded foreground-pass DSP contract exists, but its browser media-element adapter is not connected in the current UI; sources over the whole-file budget are rejected with guidance to choose a shorter source.
 - Latency depends on iPhone model, route, constraints and OS. A manual timing offset is available; no unmeasured sub-200 ms claim is made.
 - The MVP does not encrypt browser storage, sync devices, recover deleted site data, or provide accounts/cloud backup.

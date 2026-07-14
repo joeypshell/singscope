@@ -1,3 +1,5 @@
+import type { PitchEstimateReason } from '../dsp/contracts'
+
 export interface PcmBatchMessage {
   readonly type: 'pcm'
   readonly contextFrame: number
@@ -17,6 +19,21 @@ export interface PitchCandidateMessage {
   readonly peak: number
   readonly analysisGap: boolean
   readonly scorable: boolean
+  readonly reason: PitchEstimateReason
+}
+
+export type PitchCandidateGapReason =
+  'silence' | 'below-confidence' | 'out-of-range' | 'invalid-frame' | 'timeline-gap' | null
+
+export function pitchCandidateGapReason(
+  candidate: PitchCandidateMessage,
+  timelineAvailable: boolean,
+  accepted: boolean,
+): PitchCandidateGapReason {
+  if (!timelineAvailable) return 'timeline-gap'
+  if (accepted) return null
+  if (candidate.reason === 'low-confidence') return 'below-confidence'
+  return candidate.reason ?? 'invalid-frame'
 }
 
 interface WorkerResultMessage {

@@ -42,6 +42,8 @@ export interface AppTake {
   readonly id: string
   readonly createdAt: string
   readonly label: string
+  /** Project timeline position corresponding to recorded-media time zero. */
+  readonly projectStartSeconds: number
   readonly durationSeconds: number
   readonly audioAssetId: string | null
   readonly audioMimeType: string | null

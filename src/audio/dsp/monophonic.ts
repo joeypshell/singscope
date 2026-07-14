@@ -153,6 +153,7 @@ export interface CandidateSegmentationOptions {
   readonly minimumNoteDurationSeconds: number
   readonly mergeSamePitchGapSeconds: number
   readonly analysisHopSeconds: number
+  readonly analysisFrameSeconds: number
 }
 
 export const DEFAULT_CANDIDATE_SEGMENTATION_OPTIONS: CandidateSegmentationOptions = Object.freeze({
@@ -162,6 +163,7 @@ export const DEFAULT_CANDIDATE_SEGMENTATION_OPTIONS: CandidateSegmentationOption
   minimumNoteDurationSeconds: 0.08,
   mergeSamePitchGapSeconds: 0.08,
   analysisHopSeconds: 0.02,
+  analysisFrameSeconds: 0.064,
 })
 
 export interface MonophonicAnalysisResult {
@@ -260,7 +262,8 @@ function resolveSegmentationOptions(
     resolved.maximumBridgeGapSeconds < 0 ||
     resolved.minimumNoteDurationSeconds <= 0 ||
     resolved.mergeSamePitchGapSeconds < 0 ||
-    resolved.analysisHopSeconds <= 0
+    resolved.analysisHopSeconds <= 0 ||
+    resolved.analysisFrameSeconds <= 0
   ) {
     throw new RangeError('Segmentation durations are invalid')
   }
@@ -282,9 +285,11 @@ function finalizeSegment(
     point.confidence === null ? [] : [point.confidence],
   )
   if (midiValues.length === 0 || confidenceValues.length === 0) return null
-  const halfHop = options.analysisHopSeconds / 2
-  const startSeconds = Math.max(0, first.point.timeSeconds - halfHop)
-  const endSeconds = last.point.timeSeconds + halfHop
+  // A pitch estimate describes the full analysis window, not just one hop around its center.
+  // Using half a hop here visibly shortened every note and rejected short-but-valid notes.
+  const halfFrame = options.analysisFrameSeconds / 2
+  const startSeconds = Math.max(0, first.point.timeSeconds - halfFrame)
+  const endSeconds = last.point.timeSeconds + halfFrame
   if (endSeconds - startSeconds + Number.EPSILON < options.minimumNoteDurationSeconds) return null
   let preservedGapCount = 0
   for (let index = first.index; index <= last.index; index += 1) {
@@ -331,6 +336,14 @@ function mergeCandidateNotes(
     } else {
       merged.push(note)
     }
+  }
+  for (let index = 1; index < merged.length; index += 1) {
+    const previous = merged[index - 1]
+    const current = merged[index]
+    if (!previous || !current || previous.endSeconds <= current.startSeconds) continue
+    const boundary = (previous.endSeconds + current.startSeconds) / 2
+    merged[index - 1] = { ...previous, endSeconds: boundary }
+    merged[index] = { ...current, startSeconds: boundary }
   }
   return merged.map((note, index) => ({
     ...note,
@@ -398,8 +411,13 @@ function resultFromContour(
     candidateNotes: segmentMonophonicContour(contour, {
       confidenceThreshold: detector.config.confidenceThreshold,
       analysisHopSeconds: detector.config.hopDurationSeconds,
+      analysisFrameSeconds: detector.config.frameDurationSeconds,
       ...segmentation,
-    }),
+    }).map((note) => ({
+      ...note,
+      startSeconds: Math.max(0, Math.min(durationSeconds, note.startSeconds)),
+      endSeconds: Math.max(0, Math.min(durationSeconds, note.endSeconds)),
+    })),
   }
 }
 

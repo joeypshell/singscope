@@ -96,6 +96,13 @@ export function lookupTargetAtTime(targetSet: TargetSet, projectTimeSeconds: num
     }
   }
 
+  // Once an analyzed contour has been segmented into editable notes, that visible list is
+  // authoritative. Falling back to the old contour here would silently keep deleted or moved
+  // estimates scorable even though the user can no longer see them as targets.
+  if (targetSet.notes.length > 0) {
+    return { midiNote: null, targetNoteId: null, scorable: false, reason: 'outside-target' }
+  }
+
   const pointMidi = pitchPointAt(targetSet, localTimeSeconds)
   if (pointMidi !== null) {
     return { midiNote: pointMidi, targetNoteId: null, scorable: true, reason: null }

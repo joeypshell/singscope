@@ -75,7 +75,9 @@ describe('project setup', () => {
     await userEvent.selectOptions(screen.getByLabelText('Melody track'), '1')
     expect(onTrack).toHaveBeenCalledWith('1')
     expect(
-      screen.getByRole('img', { name: 'Touch piano roll for target note timing' }),
+      screen.getByRole('img', {
+        name: 'Touch piano roll for target note timing and pitch after transpose',
+      }),
     ).toBeInTheDocument()
   })
 
@@ -103,6 +105,15 @@ describe('project setup', () => {
             captureSettings: null,
             errorMessage: null,
             hasRecordedSource: false,
+          },
+          analysisSourceUrl: 'blob:recorded-source',
+          analysisScene: {
+            viewport: { startSeconds: 0, endSeconds: 2, minMidi: 58, maxMidi: 70 },
+            targets: [{ startSeconds: 0, endSeconds: 1, frequencyHz: 293.66, label: 'D4' }],
+            source: [{ timeSeconds: 0.5, frequencyHz: 261.63, confidence: 0.94 }],
+            raw: [],
+            smoothed: [],
+            gaps: [],
           },
         }}
         onBack={vi.fn()}
@@ -141,6 +152,13 @@ describe('project setup', () => {
     expect(screen.getByLabelText('Piano note sequence')).toHaveTextContent('D4 · F♯4')
     expect(screen.getByLabelText('Piano note 1')).toHaveTextContent('D4')
     expect(screen.getByLabelText('Piano note 2')).toHaveTextContent('F♯4')
+    const verifier = screen.getByRole('region', { name: 'Check what SingScope heard' })
+    expect(within(verifier).getByLabelText('Play the exact analyzed source')).toHaveAttribute(
+      'src',
+      'blob:recorded-source',
+    )
+    expect(within(verifier).getByText('Analyzed source contour')).toBeInTheDocument()
+    expect(within(verifier).getByText(/note list below is authoritative/)).toBeInTheDocument()
   })
 
   it('shows recording status, elapsed context time, applied settings, and stop', async () => {
@@ -281,6 +299,7 @@ describe('review controls', () => {
       scene: {
         viewport: { startSeconds: 0, endSeconds: 10, minMidi: 48, maxMidi: 84 },
         targets: [],
+        source: [],
         raw: [],
         smoothed: [],
         gaps: [],

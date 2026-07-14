@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ExactTimeInput } from './ExactTimeInput'
+import { calculateRollViewport } from './touch-piano-roll-viewport'
 import { TransportControls } from './TransportControls'
 import { parseExactTime } from './time-format'
 
@@ -38,5 +39,32 @@ describe('mobile controls', () => {
     )
     await userEvent.click(screen.getByRole('button', { name: 'Tap to retry' }))
     expect(onStart).toHaveBeenCalledOnce()
+  })
+
+  it('fits the piano roll to the actual low or high notes without large-array spreads', () => {
+    const low = calculateRollViewport(
+      [{ id: 'low', startSeconds: 0, endSeconds: 2, midiNote: 33 }],
+      0,
+      undefined,
+    )
+    const high = calculateRollViewport(
+      [{ id: 'high', startSeconds: 0, endSeconds: 3, midiNote: 100 }],
+      0,
+      undefined,
+    )
+    const many = calculateRollViewport(
+      Array.from({ length: 100_000 }, (_, index) => ({
+        id: `note-${index}`,
+        startSeconds: index / 100,
+        endSeconds: index / 100 + 0.1,
+        midiNote: 45 + (index % 12),
+      })),
+      0,
+      undefined,
+    )
+
+    expect(low.maxMidi).toBeLessThan(60)
+    expect(high.minMidi).toBeGreaterThan(72)
+    expect(many.durationSeconds).toBeCloseTo(1_000.09)
   })
 })

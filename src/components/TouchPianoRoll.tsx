@@ -2,16 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } 
 
 import { calculateCanvasResolution } from '../rendering/pitch-chart'
 import type { EditableTargetNote } from './TargetNoteEditor'
+import { calculateRollViewport, type RollViewport } from './touch-piano-roll-viewport'
 
 export interface TouchPianoRollProps {
   readonly notes: readonly EditableTargetNote[]
   readonly onChange: (note: EditableTargetNote) => void
-}
-
-interface RollViewport {
-  readonly durationSeconds: number
-  readonly minMidi: number
-  readonly maxMidi: number
+  readonly transpositionSemitones?: number | undefined
+  readonly durationSeconds?: number | undefined
 }
 
 interface NoteRect {
@@ -30,29 +27,19 @@ interface DragState {
   readonly durationSeconds: number
 }
 
-function rollViewport(notes: readonly EditableTargetNote[]): RollViewport {
-  const midiValues = notes.map((note) => note.midiNote)
-  const minMidi = Math.max(0, Math.min(...midiValues, 60) - 2)
-  const maxMidi = Math.min(127, Math.max(minMidi + 12, Math.max(...midiValues, 72) + 2))
-  return {
-    durationSeconds: Math.max(4, ...notes.map((note) => note.endSeconds)),
-    minMidi,
-    maxMidi,
-  }
-}
-
 function noteRects(
   notes: readonly EditableTargetNote[],
   viewport: RollViewport,
   width: number,
   height: number,
+  transpositionSemitones: number,
 ): readonly NoteRect[] {
   const pitchRows = Math.max(1, viewport.maxMidi - viewport.minMidi + 1)
   const rowHeight = height / pitchRows
   return notes.map((note) => ({
     note,
     x: (note.startSeconds / viewport.durationSeconds) * width,
-    y: (viewport.maxMidi - note.midiNote) * rowHeight + 1,
+    y: (viewport.maxMidi - (note.midiNote + transpositionSemitones)) * rowHeight + 1,
     width: Math.max(8, ((note.endSeconds - note.startSeconds) / viewport.durationSeconds) * width),
     height: Math.max(8, rowHeight - 2),
   }))
@@ -63,6 +50,7 @@ function drawRoll(
   notes: readonly EditableTargetNote[],
   viewport: RollViewport,
   selectedId: string | null,
+  transpositionSemitones: number,
 ): void {
   const rect = canvas.getBoundingClientRect()
   if (rect.width <= 0 || rect.height <= 0) return
@@ -93,9 +81,29 @@ function drawRoll(
     context.moveTo(0, row * rowHeight)
     context.lineTo(resolution.cssWidth, row * rowHeight)
     context.stroke()
+    if (midi % 12 === 0) {
+      context.fillStyle = '#625b53'
+      context.font = '11px system-ui'
+      context.fillText(`C${Math.floor(midi / 12) - 1}`, 3, Math.max(12, row * rowHeight - 2))
+    }
   }
 
-  for (const rectToDraw of noteRects(notes, viewport, resolution.cssWidth, resolution.cssHeight)) {
+  const timeTickSeconds =
+    viewport.durationSeconds <= 12 ? 1 : viewport.durationSeconds <= 90 ? 5 : 30
+  for (let second = 0; second <= viewport.durationSeconds; second += timeTickSeconds) {
+    const x = (second / viewport.durationSeconds) * resolution.cssWidth
+    context.fillStyle = '#625b53'
+    context.font = '11px system-ui'
+    context.fillText(`${second}s`, Math.min(resolution.cssWidth - 22, x + 3), 13)
+  }
+
+  for (const rectToDraw of noteRects(
+    notes,
+    viewport,
+    resolution.cssWidth,
+    resolution.cssHeight,
+    transpositionSemitones,
+  )) {
     const selected = rectToDraw.note.id === selectedId
     context.fillStyle = selected ? '#f1a832' : '#244e8a'
     context.strokeStyle = '#171719'
@@ -105,16 +113,24 @@ function drawRoll(
   }
 }
 
-export function TouchPianoRoll({ notes, onChange }: TouchPianoRollProps) {
+export function TouchPianoRoll({
+  notes,
+  onChange,
+  transpositionSemitones = 0,
+  durationSeconds,
+}: TouchPianoRollProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const viewport = useMemo(() => rollViewport(notes), [notes])
+  const viewport = useMemo(
+    () => calculateRollViewport(notes, transpositionSemitones, durationSeconds),
+    [durationSeconds, notes, transpositionSemitones],
+  )
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current
-    if (canvas) drawRoll(canvas, notes, viewport, selectedId)
-  }, [notes, selectedId, viewport])
+    if (canvas) drawRoll(canvas, notes, viewport, selectedId, transpositionSemitones)
+  }, [notes, selectedId, transpositionSemitones, viewport])
 
   useEffect(() => {
     draw()
@@ -128,7 +144,13 @@ export function TouchPianoRoll({ notes, onChange }: TouchPianoRollProps) {
     const canvasRect = event.currentTarget.getBoundingClientRect()
     const x = event.clientX - canvasRect.left
     const y = event.clientY - canvasRect.top
-    const candidates = noteRects(notes, viewport, canvasRect.width, canvasRect.height)
+    const candidates = noteRects(
+      notes,
+      viewport,
+      canvasRect.width,
+      canvasRect.height,
+      transpositionSemitones,
+    )
     return (
       [...candidates]
         .reverse()
@@ -159,7 +181,7 @@ export function TouchPianoRoll({ notes, onChange }: TouchPianoRollProps) {
         ref={canvasRef}
         className="ss-piano-roll"
         role="img"
-        aria-label="Touch piano roll for target note timing"
+        aria-label="Touch piano roll for target note timing and pitch after transpose"
         aria-describedby="touch-piano-roll-help"
         onPointerDown={(event) => {
           const hit = noteAtPointer(event)

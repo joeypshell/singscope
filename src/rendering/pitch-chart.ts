@@ -26,6 +26,8 @@ export interface PitchViewport {
 export interface PitchChartScene {
   readonly viewport: PitchViewport
   readonly targets: readonly TargetPitchSegment[]
+  /** Accepted contour from an analyzed source. This is evidence, not an editable target. */
+  readonly source: readonly PitchChartPoint[]
   readonly raw: readonly PitchChartPoint[]
   readonly smoothed: readonly PitchChartPoint[]
   readonly gaps: readonly AnalysisGap[]
@@ -90,8 +92,15 @@ function visible(timeSeconds: number, viewport: PitchViewport): boolean {
 
 function targetAt(scene: PitchChartScene, timeSeconds: number): TargetPitchSegment | undefined {
   return scene.targets.find(
-    (target) => timeSeconds >= target.startSeconds && timeSeconds <= target.endSeconds,
+    (target) => timeSeconds >= target.startSeconds && timeSeconds < target.endSeconds,
   )
+}
+
+const NOTE_NAMES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'] as const
+
+function midiLabel(midi: number): string {
+  const pitchClass = ((midi % 12) + 12) % 12
+  return `${NOTE_NAMES[pitchClass] ?? '—'}${Math.floor(midi / 12) - 1}`
 }
 
 function centsToY(cents: number, height: number): number {
@@ -149,9 +158,42 @@ function drawGrid(
       context.moveTo(0, y)
       context.lineTo(width, y)
       context.stroke()
+      if (midi % 12 === 0 || midi === Math.ceil(scene.viewport.minMidi)) {
+        context.globalAlpha = 0.82
+        context.fillText(midiLabel(midi), 3, Math.max(13, Math.min(height - 3, y - 3)))
+      }
     }
   }
   context.globalAlpha = 1
+}
+
+function drawSource(
+  context: CanvasRenderingContext2D,
+  scene: PitchChartScene,
+  width: number,
+  height: number,
+): void {
+  if (scene.mode === 'cents' || scene.source.length === 0) return
+  context.save()
+  context.strokeStyle = '#6b3fa0'
+  context.lineWidth = 2
+  context.setLineDash([6, 4])
+  context.lineJoin = 'round'
+  context.beginPath()
+  let drawing = false
+  for (const point of scene.source) {
+    if (point.frequencyHz === null || !visible(point.timeSeconds, scene.viewport)) {
+      drawing = false
+      continue
+    }
+    const x = timeToX(point.timeSeconds, scene.viewport, width)
+    const y = frequencyToY(point.frequencyHz, scene.viewport, height)
+    if (!drawing) context.moveTo(x, y)
+    else context.lineTo(x, y)
+    drawing = true
+  }
+  context.stroke()
+  context.restore()
 }
 
 function drawGaps(
@@ -282,6 +324,7 @@ export function renderPitchChart(
   context.fillRect(0, 0, width, height)
   drawGrid(context, scene, width, height)
   drawGaps(context, scene, width, height)
+  drawSource(context, scene, width, height)
   drawTargets(context, scene, width, height)
   drawRaw(context, scene, width, height)
   drawSmoothed(context, scene, width, height)

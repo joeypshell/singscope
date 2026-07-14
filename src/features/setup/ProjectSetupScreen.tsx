@@ -1,5 +1,7 @@
 import { StatusBanner } from '../../components/StatusBanner'
+import { PitchChartCanvas } from '../../components/PitchChartCanvas'
 import { TargetNoteEditor, type EditableTargetNote } from '../../components/TargetNoteEditor'
+import type { PitchChartScene } from '../../rendering/pitch-chart'
 import { RecordedMelodyControl, type RecordedMelodyView } from './RecordedMelodyControl'
 
 export type { RecordedMelodyPhase, RecordedMelodyView } from './RecordedMelodyControl'
@@ -25,6 +27,8 @@ export interface ProjectSetupView {
   readonly midiTracks?: readonly MidiTrackView[] | undefined
   readonly selectedMidiTrackId?: string | null | undefined
   readonly recordedMelody?: RecordedMelodyView | undefined
+  readonly analysisScene?: PitchChartScene | undefined
+  readonly analysisSourceUrl?: string | null | undefined
 }
 
 export interface ProjectSetupScreenProps {
@@ -210,6 +214,39 @@ export function ProjectSetupScreen({
             </div>
           ) : null}
           <p role="status">{model.targetStatus}</p>
+          {model.targetMode === 'isolated-vocal' && model.analysisScene ? (
+            <section className="ss-card ss-stack" aria-labelledby="analysis-check-heading">
+              <div>
+                <h3 id="analysis-check-heading">Check what SingScope heard</h3>
+                <p>
+                  The dashed line is the accepted source pitch contour—not a waveform or a
+                  guaranteed transcription. The blue blocks are editable, quantized piano-note
+                  estimates at the source's recorded pitch. Project transpose is previewed in the
+                  piano roll below. Listen and compare before saving.
+                </p>
+              </div>
+              {model.analysisSourceUrl ? (
+                // This is user-created, non-speech melody audio; there is no spoken content to caption.
+                // eslint-disable-next-line jsx-a11y/media-has-caption
+                <audio
+                  aria-label="Play the exact analyzed source"
+                  controls
+                  preload="metadata"
+                  src={model.analysisSourceUrl}
+                />
+              ) : null}
+              <PitchChartCanvas
+                scene={model.analysisScene}
+                label="Analyzed source pitch contour overlaid with editable piano-note estimates. Gaps indicate frames without an accepted pitch."
+                height={260}
+              />
+              <p className="ss-help">
+                This project stores the accepted contour. Detailed raw-candidate and gap reasons are
+                unavailable for this analysis version; the note list below is authoritative for
+                scoring.
+              </p>
+            </section>
+          ) : null}
           <div className="ss-field-grid">
             <label className="ss-field">
               <span>Transpose (semitones)</span>
@@ -235,6 +272,7 @@ export function ProjectSetupScreen({
           <TargetNoteEditor
             notes={model.notes}
             transpositionSemitones={model.transpositionSemitones}
+            durationSeconds={model.analysisScene?.viewport.endSeconds}
             onChange={onNoteChange}
             onAdd={onAddNote}
             onRemove={onRemoveNote}
