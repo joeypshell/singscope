@@ -1,0 +1,11 @@
+# Supabase
+.branches
+.temp
+
+# Edge Function and local CLI secrets. `.env.example` files remain committable.
+.env
+.env.*
+!.env.example
+
+# dotenvx key material
+.env.keys

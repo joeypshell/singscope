@@ -6,8 +6,17 @@ export interface AnalysisDebugPanelProps {
   readonly onExpectedNoteCountChange: (count: number | null) => void
   readonly onIssueDescriptionChange: (description: string) => void
   readonly onRouteCategoryChange: (route: AnalysisDebugRouteCategory) => void
-  readonly onPrepare: () => void
-  readonly onShareOrSave: () => void
+  readonly onSend: () => void
+  readonly onSavePackage: () => void
+}
+
+function sendButtonLabel(model: AnalysisDebugView): string {
+  if (model.phase === 'preparing') return 'Preparing report…'
+  if (model.phase === 'uploading') return 'Sending report…'
+  if (model.phase === 'complete') return 'Report sent'
+  if (model.phase === 'error' && model.canSavePackage) return 'Retry sending report'
+  if (model.phase === 'error') return 'Try sending again'
+  return 'Send bug report'
 }
 
 export function AnalysisDebugPanel({
@@ -15,22 +24,20 @@ export function AnalysisDebugPanel({
   onExpectedNoteCountChange,
   onIssueDescriptionChange,
   onRouteCategoryChange,
-  onPrepare,
-  onShareOrSave,
+  onSend,
+  onSavePackage,
 }: AnalysisDebugPanelProps) {
-  const preparing = model.phase === 'preparing'
-  const sharing = model.phase === 'sharing'
-  const ready = model.phase === 'ready' || model.phase === 'complete'
+  const busy = model.phase === 'preparing' || model.phase === 'uploading'
 
   return (
     <section className="ss-card ss-stack" aria-labelledby="analysis-debug-heading">
       <div>
-        <h3 id="analysis-debug-heading">Help diagnose a missed-note bug</h3>
+        <h3 id="analysis-debug-heading">Report a missed-note bug</h3>
         <p>
-          Prepare a debug package containing the exact analyzed source audio—your microphone audio
-          when recorded here—plus the raw analysis, estimated notes, browser user-agent/version,
-          viewport and display mode, and applied capture settings. Preparation stays on this device.
-          Nothing is uploaded or shared unless you make a fresh Share / Save tap.
+          One tap prepares and sends the exact analyzed source audio—your microphone audio when
+          recorded here—plus the raw analysis, estimated notes, browser version, viewport, display
+          mode, and applied capture settings. SingScope does not send a report until you tap the
+          button below.
         </p>
       </div>
       <div className="ss-stack">
@@ -42,7 +49,7 @@ export function AnalysisDebugPanel({
             min={1}
             max={100}
             step={1}
-            disabled={preparing || sharing}
+            disabled={busy}
             value={model.expectedNoteCount ?? ''}
             onChange={(event) => {
               const value = event.currentTarget.valueAsNumber
@@ -54,7 +61,7 @@ export function AnalysisDebugPanel({
           <span>Microphone route</span>
           <select
             value={model.routeCategory}
-            disabled={preparing || sharing}
+            disabled={busy}
             onChange={(event) =>
               onRouteCategoryChange(event.currentTarget.value as AnalysisDebugRouteCategory)
             }
@@ -70,45 +77,56 @@ export function AnalysisDebugPanel({
           <textarea
             maxLength={500}
             rows={3}
-            disabled={preparing || sharing}
+            disabled={busy}
             value={model.issueDescription}
             onChange={(event) => onIssueDescriptionChange(event.currentTarget.value)}
           />
         </label>
       </div>
       <p className="ss-help">
-        The package may contain identifiable voice or room audio. Review where you send it; its
-        diagnostics omit your project title, file name, microphone identifier, and unrelated
-        projects. Attaching it to ChatGPT—or sending it to any other service or person—uploads the
-        exact audio and diagnostics to that recipient.
+        The report may contain identifiable voice or room audio. Tapping Send uploads it to the
+        private SingScope report inbox, where authorized maintainers can access it and Supabase may
+        also process normal request metadata such as your IP address. The service records a 30-day
+        deletion deadline; until scheduled cleanup is verified, a maintainer must delete it. The
+        diagnostics omit your project title, file name, microphone identifier, lyrics, and unrelated
+        projects.
       </p>
+      {!model.reportingAvailable ? (
+        <StatusBanner
+          tone="warning"
+          title="Direct reporting is not configured"
+          message="This build has no report destination. Update the app configuration before sending a report."
+        />
+      ) : null}
       {model.errorMessage ? (
         <StatusBanner
           tone="danger"
-          title="Debug package could not finish"
+          title="Bug report delivery not confirmed"
           message={model.errorMessage}
         />
       ) : null}
-      {model.phase === 'complete' ? (
+      {model.phase === 'complete' && model.reportId ? (
         <StatusBanner
           tone="success"
-          title="Share / Save request accepted"
-          message="Your browser accepted the request. You can use the prepared package again until a new analysis replaces it."
+          title="Bug report sent"
+          message={`Report ID: ${model.reportId}${model.receivedAt ? ` · Received ${model.receivedAt}` : ''}`}
         />
       ) : null}
       <div className="ss-button-row">
         <button
           className="ss-button ss-button--primary"
           type="button"
-          disabled={preparing || sharing}
-          onClick={onPrepare}
+          disabled={!model.reportingAvailable || busy || model.phase === 'complete'}
+          onClick={onSend}
         >
-          {preparing ? '1. Preparing debug package…' : '1. Prepare debug package'}
+          {sendButtonLabel(model)}
+          {model.packageSizeLabel && model.phase === 'error' ? ` · ${model.packageSizeLabel}` : ''}
         </button>
-        <button className="ss-button" type="button" disabled={!ready} onClick={onShareOrSave}>
-          2. Share / Save
-          {model.packageSizeLabel ? ` · ${model.packageSizeLabel}` : ''}
-        </button>
+        {model.phase === 'error' && model.canSavePackage ? (
+          <button className="ss-button" type="button" onClick={onSavePackage}>
+            Save debug package
+          </button>
+        ) : null}
       </div>
     </section>
   )

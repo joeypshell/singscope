@@ -25,6 +25,11 @@ export default defineConfig({
     : {
         command: 'pnpm build && pnpm preview --host 127.0.0.1',
         url: 'http://127.0.0.1:4173',
+        env: {
+          VITE_SINGSCOPE_REPORT_ENDPOINT:
+            process.env.VITE_SINGSCOPE_REPORT_ENDPOINT ??
+            'http://127.0.0.1:4173/functions/v1/analysis-report',
+        },
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,
       },

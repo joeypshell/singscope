@@ -19,9 +19,14 @@ React routes and mobile feature screens
                 ├── YIN pitch analysis
                 ├── MIDI parser
                 └── export/ZIP preparation
+
+Explicit diagnostic-report path (never automatic)
+        └── local debug ZIP → Supabase Edge Function
+                                    ├── private Storage object
+                                    └── minimal report receipt/expiry metadata
 ```
 
-The production URL uses hash routing and the Vite base `/singscope/`. The manifest identity and scope are `/singscope/`, and its launch URL is `/singscope/#/`, so GitHub Pages does not need rewrite rules. Databases, OPFS paths, caches, and events use a `singscope` namespace because Pages project sites under `joeypshell.github.io` share an origin. Workbox uses the explicit `singscope-app-shell-v1` cache ID.
+The application shell remains a static PWA. The production URL uses hash routing and the Vite base `/singscope/`. The manifest identity and scope are `/singscope/`, and its launch URL is `/singscope/#/`, so GitHub Pages does not need rewrite rules. Databases, OPFS paths, caches, and events use a `singscope` namespace because Pages project sites under `joeypshell.github.io` share an origin. Workbox uses the explicit `singscope-app-shell-v1` cache ID. A deployment may additionally configure one narrowly scoped cross-origin Supabase report endpoint; it is not used for project persistence, authentication, sync, or routine analysis.
 
 ## Version contracts
 
@@ -30,6 +35,7 @@ Versions are intentionally independent:
 - IndexedDB schema: database migrations and repository records.
 - Project backup schema: validation and migration of portable project archives.
 - Feedback package schema: coach/collaborator export contract.
+- Analysis-debug package and report-receipt schemas: opt-in diagnostic upload contract.
 - Pitch detector: changes to candidate generation and confidence.
 - Metrics formulas: changes to scoring eligibility or calculations.
 
@@ -68,3 +74,9 @@ Storage probes run before recording. Persistent-storage permission is requested 
 ## Export
 
 Export preparation is separate from the fresh Share/Save user tap required by iOS. A static worker writes safe fixed paths, incrementally hashes entries, stores already-compressed audio, and deflates text. Scratch output uses OPFS where available. The ZIP contains encoded recording, conditional WAV, CSV/JSON, a 1600×900 chart, script-free report, manifest and README. Reference audio is excluded unless the user explicitly accepts a rights warning.
+
+## Direct diagnostic reporting
+
+The missed-note diagnostic flow reuses the static export worker to build a bounded `singscope-analysis-debug.zip` in local scratch storage. Merely recording, analyzing, opening the panel, or filling its fields makes no remote request. One explicit **Send bug report** action prepares the package, requests a short-lived ticket bound to its package ID/hash/length, solves a small cancellable WebCrypto proof of work locally, and then posts the ZIP bytes as `application/zip` to the configured Supabase Edge Function. The response is a small versioned receipt containing the opaque report ID and receipt time.
+
+The Edge Function is the only trusted writer. Before reading ZIP bytes it verifies the signed ticket/proof and atomically claims a single-use private reservation subject to concurrent and daily ceilings. It then validates the archive, writes it to a private Storage bucket, and records only the metadata needed to find and expire it. Any Supabase secret/service credential stays in the function environment; the public PWA contains only the endpoint and an optional publishable key. The client receives no bucket path, read credential, or public URL. Failed requests leave projects unchanged and expose retry plus a local **Save debug package** fallback when preparation succeeded.

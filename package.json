@@ -26,16 +26,19 @@
     "preview": "vite preview",
     "preview:pages": "vite preview --mode pages",
     "typecheck": "tsc -b --pretty false",
+    "typecheck:supabase": "tsc -p supabase/tsconfig.json --pretty false",
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "test:supabase": "vitest run --config supabase/vitest.config.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
+    "test:live-report": "vitest run tests/live/analysis-report.live.test.ts",
     "test:safari": "node tests/safari/run.mjs",
     "audit:prod": "pnpm audit --prod --audit-level high",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build:pages"
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm typecheck:supabase && pnpm test && pnpm test:supabase && pnpm build:pages"
   },
   "dependencies": {
     "@noble/hashes": "2.2.0",
@@ -73,6 +76,7 @@
     "jsdom": "29.1.1",
     "prettier": "3.9.5",
     "selenium-webdriver": "4.46.0",
+    "supabase": "2.109.1",
     "typescript": "6.0.3",
     "typescript-eslint": "8.63.0",
     "vite": "8.1.4",

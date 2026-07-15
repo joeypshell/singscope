@@ -19,7 +19,11 @@ export function OnboardingScreen({
         <div>
           <p className="ss-eyebrow">iPhone-first local practice</p>
           <h1>Before your first project</h1>
-          <p>SingScope records and analyzes on this device. Nothing is uploaded.</p>
+          <p>
+            SingScope records and analyzes on this device. Nothing is uploaded automatically. If you
+            explicitly send a bug report, the app warns you first because that report includes the
+            exact analyzed audio.
+          </p>
         </div>
 
         <StatusBanner

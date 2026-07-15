@@ -1,0 +1,3 @@
+-- SingScope has no development fixture rows. This intentionally empty seed
+-- keeps `supabase db reset` deterministic while satisfying config.toml's
+-- explicit seed path.

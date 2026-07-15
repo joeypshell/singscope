@@ -68,21 +68,25 @@ import {
   targetAnalysisScene,
 } from './app/view-models'
 import {
-  canSharePreparedPackage,
   debugAudioExtensionForMimeType,
   discardPreparedExport,
   ExportPreparer,
   materializePreparedExport,
   pruneExportScratch,
   savePreparedPackage,
-  sharePreparedPackage,
   type AnalysisDebugPackageInput,
   type AnalysisDebugDisplayMode,
   type PreparedExportHandle,
   type PreparedPackage,
 } from './export'
+import { analysisReportConfigurationFromEnv, sendAnalysisReport } from './report'
 
 const ONBOARDING_KEY = 'singscope:onboarding:v1'
+const ANALYSIS_REPORT_TIMEOUT_MS = 120_000
+const ANALYSIS_REPORT_CONFIGURATION = analysisReportConfigurationFromEnv({
+  VITE_SINGSCOPE_REPORT_ENDPOINT: import.meta.env.VITE_SINGSCOPE_REPORT_ENDPOINT,
+  VITE_SINGSCOPE_REPORT_PUBLISHABLE_KEY: import.meta.env.VITE_SINGSCOPE_REPORT_PUBLISHABLE_KEY,
+})
 
 function installedDisplayMode(): boolean {
   const standaloneNavigator = navigator as Navigator & { standalone?: boolean }
@@ -109,10 +113,6 @@ function packageSizeLabel(byteLength: number): string {
   const mebibytes = byteLength / (1024 * 1024)
   if (mebibytes >= 1) return `${mebibytes.toFixed(1)} MiB`
   return `${Math.max(1, Math.ceil(byteLength / 1024)).toString()} KiB`
-}
-
-function shareWasCancelled(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError'
 }
 
 function asMessage(error: unknown): string {
@@ -347,8 +347,12 @@ interface PreparedAnalysisDebug {
 
 const INITIAL_ANALYSIS_DEBUG: AnalysisDebugView = {
   phase: 'idle',
+  reportingAvailable: ANALYSIS_REPORT_CONFIGURATION !== null,
+  canSavePackage: false,
   packageSizeLabel: null,
   errorMessage: null,
+  reportId: null,
+  receivedAt: null,
   expectedNoteCount: null,
   issueDescription: '',
   routeCategory: 'unknown',
@@ -643,6 +647,7 @@ function SetupRoute() {
   const [analysisDebug, setAnalysisDebug] = useState<AnalysisDebugView>(INITIAL_ANALYSIS_DEBUG)
   const preparedAnalysisDebugRef = useRef<PreparedAnalysisDebug | null>(null)
   const analysisDebugPreparerRef = useRef<ExportPreparer | null>(null)
+  const analysisDebugUploadAbortRef = useRef<AbortController | null>(null)
   const analysisDebugGenerationRef = useRef(0)
   useEffect(() => {
     stateRef.current = state
@@ -679,6 +684,8 @@ function SetupRoute() {
 
   const releasePreparedAnalysisDebug = useCallback(() => {
     analysisDebugGenerationRef.current += 1
+    analysisDebugUploadAbortRef.current?.abort()
+    analysisDebugUploadAbortRef.current = null
     analysisDebugPreparerRef.current?.terminate()
     analysisDebugPreparerRef.current = null
     const prepared = preparedAnalysisDebugRef.current
@@ -692,6 +699,7 @@ function SetupRoute() {
       ...INITIAL_ANALYSIS_DEBUG,
       expectedNoteCount: current.expectedNoteCount,
       issueDescription: current.issueDescription,
+      routeCategory: current.routeCategory,
     }))
   }, [releasePreparedAnalysisDebug])
 
@@ -925,7 +933,106 @@ function SetupRoute() {
     [releasePreparedAnalysisDebug],
   )
 
-  const prepareAnalysisDebug = useCallback(() => {
+  const uploadPreparedAnalysisDebug = useCallback(
+    (prepared: PreparedAnalysisDebug, generation: number) => {
+      const configuration = ANALYSIS_REPORT_CONFIGURATION
+      const manifest = prepared.handle.analysisDebugManifest
+      if (configuration === null || manifest === undefined) {
+        setAnalysisDebug((value) => ({
+          ...value,
+          phase: 'error',
+          canSavePackage: true,
+          packageSizeLabel: packageSizeLabel(prepared.handle.byteLength),
+          errorMessage:
+            configuration === null
+              ? 'Direct reporting is not configured in this build.'
+              : 'The prepared package is missing its report identity. Save it locally and try a fresh analysis.',
+          reportId: null,
+          receivedAt: null,
+        }))
+        return
+      }
+
+      const abortController = new AbortController()
+      let timedOut = false
+      const timeoutId = window.setTimeout(() => {
+        timedOut = true
+        abortController.abort()
+      }, ANALYSIS_REPORT_TIMEOUT_MS)
+      analysisDebugUploadAbortRef.current = abortController
+      setAnalysisDebug((value) => ({
+        ...value,
+        phase: 'uploading',
+        canSavePackage: true,
+        packageSizeLabel: packageSizeLabel(prepared.handle.byteLength),
+        errorMessage: null,
+        reportId: null,
+        receivedAt: null,
+      }))
+      void (async () => {
+        try {
+          const receipt = await sendAnalysisReport(configuration, {
+            blob: prepared.packageValue.blob,
+            packageId: manifest.packageId,
+            packageSha256: prepared.packageValue.sha256,
+            signal: abortController.signal,
+          })
+          if (generation !== analysisDebugGenerationRef.current) return
+          if (preparedAnalysisDebugRef.current === prepared) {
+            preparedAnalysisDebugRef.current = null
+          }
+          await discardPreparedExport(prepared.handle).catch(() => undefined)
+          setAnalysisDebug((value) => ({
+            ...value,
+            phase: 'complete',
+            canSavePackage: false,
+            errorMessage: null,
+            reportId: receipt.reportId,
+            receivedAt: receipt.receivedAt,
+          }))
+        } catch (error) {
+          if (generation !== analysisDebugGenerationRef.current) return
+          setAnalysisDebug((value) => ({
+            ...value,
+            phase: 'error',
+            canSavePackage: true,
+            errorMessage: timedOut
+              ? 'Sending timed out, so delivery was not confirmed. The service may already have received it. Retrying is safe and reuses the same report identity; nothing will be sent later in the background.'
+              : asMessage(error),
+            reportId: null,
+            receivedAt: null,
+          }))
+        } finally {
+          window.clearTimeout(timeoutId)
+          if (analysisDebugUploadAbortRef.current === abortController) {
+            analysisDebugUploadAbortRef.current = null
+          }
+        }
+      })()
+    },
+    [],
+  )
+
+  const sendAnalysisDebug = useCallback(() => {
+    if (ANALYSIS_REPORT_CONFIGURATION === null) {
+      setAnalysisDebug((value) => ({
+        ...value,
+        phase: 'error',
+        canSavePackage: false,
+        packageSizeLabel: null,
+        errorMessage: 'Direct reporting is not configured in this build.',
+        reportId: null,
+        receivedAt: null,
+      }))
+      return
+    }
+
+    const existingPrepared = preparedAnalysisDebugRef.current
+    if (existingPrepared) {
+      uploadPreparedAnalysisDebug(existingPrepared, analysisDebugGenerationRef.current)
+      return
+    }
+
     const current = stateRef.current
     const draft = current.analysisDebugDraft
     const source = current.targetSourceFile
@@ -933,8 +1040,11 @@ function SetupRoute() {
       setAnalysisDebug((value) => ({
         ...value,
         phase: 'error',
+        canSavePackage: false,
         packageSizeLabel: null,
-        errorMessage: 'Record or upload and analyze a new source before preparing diagnostics.',
+        errorMessage: 'Record or upload and analyze a new source before sending diagnostics.',
+        reportId: null,
+        receivedAt: null,
       }))
       return
     }
@@ -943,9 +1053,12 @@ function SetupRoute() {
       setAnalysisDebug((value) => ({
         ...value,
         phase: 'error',
+        canSavePackage: false,
         packageSizeLabel: null,
         errorMessage:
           'This source audio format cannot be placed in a safe debug package. Record again on this device or use AAC, M4A, MP3, MP4, WebM, or WAV.',
+        reportId: null,
+        receivedAt: null,
       }))
       return
     }
@@ -955,8 +1068,11 @@ function SetupRoute() {
     setAnalysisDebug((value) => ({
       ...value,
       phase: 'preparing',
+      canSavePackage: false,
       packageSizeLabel: null,
       errorMessage: null,
+      reportId: null,
+      receivedAt: null,
     }))
     const preparer = new ExportPreparer()
     analysisDebugPreparerRef.current = preparer
@@ -1001,21 +1117,20 @@ function SetupRoute() {
           await discardPreparedExport(preparedHandle).catch(() => undefined)
           return
         }
-        preparedAnalysisDebugRef.current = { handle: preparedHandle, packageValue }
-        setAnalysisDebug((value) => ({
-          ...value,
-          phase: 'ready',
-          packageSizeLabel: packageSizeLabel(preparedHandle.byteLength),
-          errorMessage: null,
-        }))
+        const prepared = { handle: preparedHandle, packageValue }
+        preparedAnalysisDebugRef.current = prepared
+        uploadPreparedAnalysisDebug(prepared, generation)
       } catch (error) {
         if (handle) await discardPreparedExport(handle).catch(() => undefined)
         if (generation !== analysisDebugGenerationRef.current) return
         setAnalysisDebug((value) => ({
           ...value,
           phase: 'error',
+          canSavePackage: false,
           packageSizeLabel: null,
           errorMessage: asMessage(error),
+          reportId: null,
+          receivedAt: null,
         }))
       } finally {
         preparer.terminate()
@@ -1029,39 +1144,31 @@ function SetupRoute() {
     analysisDebug.issueDescription,
     analysisDebug.routeCategory,
     releasePreparedAnalysisDebug,
+    uploadPreparedAnalysisDebug,
   ])
 
-  const shareAnalysisDebug = useCallback(() => {
+  const saveAnalysisDebugPackage = useCallback(() => {
     const prepared = preparedAnalysisDebugRef.current
     if (!prepared) {
       setAnalysisDebug((value) => ({
         ...value,
         phase: 'error',
+        canSavePackage: false,
         packageSizeLabel: null,
-        errorMessage: 'Prepare the debug package again before sharing or saving it.',
+        errorMessage: 'Send the report again to prepare a package before saving it.',
       }))
       return
     }
-    const generation = analysisDebugGenerationRef.current
-    setAnalysisDebug((value) => ({ ...value, phase: 'sharing', errorMessage: null }))
-    void (async () => {
-      try {
-        if (canSharePreparedPackage(prepared.packageValue)) {
-          await sharePreparedPackage(prepared.packageValue)
-        } else {
-          savePreparedPackage(prepared.packageValue)
-        }
-        if (generation !== analysisDebugGenerationRef.current) return
-        setAnalysisDebug((value) => ({ ...value, phase: 'complete', errorMessage: null }))
-      } catch (error) {
-        if (generation !== analysisDebugGenerationRef.current) return
-        setAnalysisDebug((value) => ({
-          ...value,
-          phase: 'ready',
-          errorMessage: shareWasCancelled(error) ? null : asMessage(error),
-        }))
-      }
-    })()
+    try {
+      savePreparedPackage(prepared.packageValue)
+      setAnalysisDebug((value) => ({
+        ...value,
+        errorMessage:
+          'A local debug package was saved. Delivery was not confirmed, so the service may still have received the report.',
+      }))
+    } catch (error) {
+      setAnalysisDebug((value) => ({ ...value, errorMessage: asMessage(error) }))
+    }
   }, [])
 
   const changeAnalysisDebugExpectedNoteCount = useCallback(
@@ -1070,8 +1177,11 @@ function SetupRoute() {
       setAnalysisDebug((value) => ({
         ...value,
         phase: 'idle',
+        canSavePackage: false,
         packageSizeLabel: null,
         errorMessage: null,
+        reportId: null,
+        receivedAt: null,
         expectedNoteCount: count === null ? null : Math.max(1, Math.min(100, Math.trunc(count))),
       }))
     },
@@ -1084,8 +1194,11 @@ function SetupRoute() {
       setAnalysisDebug((value) => ({
         ...value,
         phase: 'idle',
+        canSavePackage: false,
         packageSizeLabel: null,
         errorMessage: null,
+        reportId: null,
+        receivedAt: null,
         issueDescription: description.slice(0, 500),
       }))
     },
@@ -1098,8 +1211,11 @@ function SetupRoute() {
       setAnalysisDebug((value) => ({
         ...value,
         phase: 'idle',
+        canSavePackage: false,
         packageSizeLabel: null,
         errorMessage: null,
+        reportId: null,
+        receivedAt: null,
         routeCategory,
       }))
     },
@@ -1253,8 +1369,8 @@ function SetupRoute() {
       onAnalysisDebugExpectedNoteCountChange={changeAnalysisDebugExpectedNoteCount}
       onAnalysisDebugIssueDescriptionChange={changeAnalysisDebugIssueDescription}
       onAnalysisDebugRouteCategoryChange={changeAnalysisDebugRouteCategory}
-      onPrepareAnalysisDebug={prepareAnalysisDebug}
-      onShareAnalysisDebug={shareAnalysisDebug}
+      onSendAnalysisDebug={sendAnalysisDebug}
+      onSaveAnalysisDebugPackage={saveAnalysisDebugPackage}
       useRecordedSourceAsReference={useRecordedSourceAsReference}
       onUseRecordedSourceAsReferenceChange={(useAsReference) => {
         setUseRecordedSourceAsReference(useAsReference)

@@ -35,7 +35,9 @@ jobs:
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm typecheck:supabase
       - run: pnpm test:coverage
+      - run: pnpm test:supabase
       - run: pnpm build:pages
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure()
@@ -149,7 +151,58 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Require the verified production report backend
+        env:
+          VITE_SINGSCOPE_REPORT_ENDPOINT: ${{ vars.SINGSCOPE_REPORT_ENDPOINT }}
+          REPORT_ABUSE_GATE_VERIFIED: ${{ vars.SINGSCOPE_REPORT_ABUSE_GATE_VERIFIED }}
+          REPORT_PRIVATE_ACCESS_VERIFIED: ${{ vars.SINGSCOPE_REPORT_PRIVATE_ACCESS_VERIFIED }}
+          REPORT_RETENTION_VERIFIED: ${{ vars.SINGSCOPE_REPORT_RETENTION_VERIFIED }}
+        run: |
+          test -n "$VITE_SINGSCOPE_REPORT_ENDPOINT"
+          test "$REPORT_ABUSE_GATE_VERIFIED" = 'true'
+          test "$REPORT_PRIVATE_ACCESS_VERIFIED" = 'true'
+          test "$REPORT_RETENTION_VERIFIED" = 'true'
+      - name: Verify report endpoint and browser preflight
+        env:
+          REPORT_ENDPOINT: ${{ vars.SINGSCOPE_REPORT_ENDPOINT }}
+        run: |
+          PREFLIGHT_STATUS=$(curl --silent --show-error --output /tmp/report-preflight-body --dump-header /tmp/report-preflight-headers --write-out '%{http_code}' --request OPTIONS "$REPORT_ENDPOINT" \
+            --header 'Origin: https://joeypshell.github.io' \
+            --header 'Access-Control-Request-Method: POST' \
+            --header 'Access-Control-Request-Headers: content-type,x-singscope-package-bytes,x-singscope-package-id,x-singscope-package-sha256,x-singscope-report-proof,x-singscope-report-ticket,x-singscope-schema-version')
+          test "$PREFLIGHT_STATUS" = '204'
+          tr -d '\r' < /tmp/report-preflight-headers | grep --ignore-case --fixed-strings 'access-control-allow-origin: https://joeypshell.github.io'
+
+          printf 'not-a-zip' > /tmp/invalid-singscope-report
+          INVALID_HASH=$(sha256sum /tmp/invalid-singscope-report | cut -d ' ' -f 1)
+          printf '{"format":"singscope-analysis-report-ticket-request","schemaVersion":1}' > /tmp/singscope-ticket-request
+          TICKET_STATUS=$(curl --silent --show-error --output /tmp/report-ticket-body --write-out '%{http_code}' --request POST "$REPORT_ENDPOINT" \
+            --header 'Origin: https://joeypshell.github.io' \
+            --header 'Content-Type: application/json' \
+            --header 'X-SingScope-Package-Bytes: 9' \
+            --header 'X-SingScope-Package-Id: 00000000-0000-4000-8000-000000000001' \
+            --header "X-SingScope-Package-Sha256: $INVALID_HASH" \
+            --header 'X-SingScope-Schema-Version: 1' \
+            --data-binary @/tmp/singscope-ticket-request)
+          test "$TICKET_STATUS" = '201'
+          jq -e '.format == "singscope-analysis-report-ticket" and .schemaVersion == 1 and (.ticket | type == "string") and (.difficulty | type == "number")' /tmp/report-ticket-body >/dev/null
+
+          # A forged upload without the signed ticket/proof must be rejected
+          # before the function reads or validates the ZIP bytes.
+          INVALID_STATUS=$(curl --silent --show-error --output /tmp/report-invalid-body --write-out '%{http_code}' --request POST "$REPORT_ENDPOINT" \
+            --header 'Origin: https://joeypshell.github.io' \
+            --header 'Content-Type: application/zip' \
+            --header 'X-SingScope-Package-Bytes: 9' \
+            --header 'X-SingScope-Package-Id: 00000000-0000-4000-8000-000000000001' \
+            --header "X-SingScope-Package-Sha256: $INVALID_HASH" \
+            --header 'X-SingScope-Schema-Version: 1' \
+            --data-binary @/tmp/invalid-singscope-report)
+          test "$INVALID_STATUS" = '403'
+          jq -e '.error.code == "REPORT_TICKET_INVALID"' /tmp/report-invalid-body >/dev/null
       - run: pnpm build:pages
+        env:
+          VITE_SINGSCOPE_REPORT_ENDPOINT: ${{ vars.SINGSCOPE_REPORT_ENDPOINT }}
+          VITE_SINGSCOPE_REPORT_PUBLISHABLE_KEY: ${{ vars.SINGSCOPE_REPORT_PUBLISHABLE_KEY }}
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: dist

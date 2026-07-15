@@ -13,6 +13,7 @@ import {
   debugAudioExtensionForMimeType,
 } from './analysis-debug-package'
 import { analysisDebugManifestSchema } from './schemas'
+import { validateAnalysisDebugArchive } from '../../supabase/functions/analysis-report/archive-validator'
 
 const analysis: MonophonicAnalysisResult = {
   detectorVersion: 'yin-24k-debug-test',
@@ -93,7 +94,10 @@ async function extractArchive(blob: Blob): Promise<{
 
 describe('local analysis debug package', () => {
   it('contains exact STORE audio, full detector evidence, fixed paths, and verifiable hashes', async () => {
-    const audioBytes = new Uint8Array([0, 1, 2, 3, 254, 255])
+    const audioBytes = new Uint8Array([
+      0x00, 0x00, 0x00, 0x10, 0x66, 0x74, 0x79, 0x70, 0x4d, 0x34, 0x41, 0x20, 0x00, 0x00, 0x00,
+      0x00,
+    ])
     const result = await createAnalysisDebugPackage({
       audio: {
         blob: new Blob([audioBytes], { type: 'audio/mp4;codecs=mp4a.40.2' }),
@@ -198,8 +202,19 @@ describe('local analysis debug package', () => {
     }
 
     const readme = new TextDecoder().decode(archive.entries.get('README.txt'))
-    expect(readme).toMatch(/never uploads automatically/i)
+    expect(readme).toMatch(/never uploaded automatically/i)
     expect(readme).toMatch(/Attaching it to ChatGPT.*uploads it/i)
+
+    const packageBytes = new Uint8Array(await result.blob.arrayBuffer())
+    await expect(
+      validateAnalysisDebugArchive(packageBytes, {
+        packageId: result.manifest.packageId,
+        packageSha256: sha256Bytes(packageBytes),
+        packageBytes: packageBytes.byteLength,
+        schemaVersion: 1,
+        declaredLength: packageBytes.byteLength,
+      }),
+    ).resolves.toBeUndefined()
   })
 
   it('supports fixed safe extensions for recorded and uploaded audio MIME types', () => {
