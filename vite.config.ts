@@ -1,23 +1,28 @@
 import react from '@vitejs/plugin-react'
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
-const CSP = [
-  "default-src 'none'",
-  "base-uri 'none'",
-  "object-src 'none'",
-  "form-action 'none'",
-  "script-src 'self'",
-  "style-src 'self'",
-  "img-src 'self' data: blob:",
-  "font-src 'self'",
-  "media-src 'self' blob:",
-  "worker-src 'self'",
-  "connect-src 'self'",
-  "manifest-src 'self'",
-].join('; ')
+import { validateAnalysisReportBuildEnvironment } from './src/report/analysis-report-config.js'
 
-function productionCsp(): Plugin {
+function contentSecurityPolicy(reportOrigin: string | null): string {
+  const connectSources = ["'self'", ...(reportOrigin === null ? [] : [reportOrigin])]
+  return [
+    "default-src 'none'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    "form-action 'none'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self' data: blob:",
+    "font-src 'self'",
+    "media-src 'self' blob:",
+    "worker-src 'self'",
+    `connect-src ${connectSources.join(' ')}`,
+    "manifest-src 'self'",
+  ].join('; ')
+}
+
+function productionCsp(csp: string): Plugin {
   return {
     name: 'singscope-production-csp',
     apply: 'build',
@@ -26,7 +31,7 @@ function productionCsp(): Plugin {
       handler: () => [
         {
           tag: 'meta',
-          attrs: { 'http-equiv': 'Content-Security-Policy', content: CSP },
+          attrs: { 'http-equiv': 'Content-Security-Policy', content: csp },
           injectTo: 'head-prepend',
         },
       ],
@@ -36,10 +41,12 @@ function productionCsp(): Plugin {
 
 export default defineConfig(({ mode }) => {
   const base = mode === 'pages' ? '/singscope/' : '/'
+  const environment = loadEnv(mode, process.cwd(), 'VITE_')
+  const csp = contentSecurityPolicy(validateAnalysisReportBuildEnvironment(environment))
   return {
     base,
     plugins: [
-      productionCsp(),
+      productionCsp(csp),
       react(),
       VitePWA({
         registerType: 'prompt',

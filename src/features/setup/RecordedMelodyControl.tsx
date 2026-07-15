@@ -123,7 +123,10 @@ export function RecordedMelodyControl({
           Chords and mixed music are not supported.
         </p>
         <p>Record up to 60 seconds (8 MiB maximum) and keep SingScope in the foreground.</p>
-        <p>Recorded and analyzed only on this device. Nothing is uploaded.</p>
+        <p>
+          Recording and analysis stay on this device unless you explicitly tap the warned Send bug
+          report button after analysis.
+        </p>
       </div>
 
       {model.phase === 'error' ? (

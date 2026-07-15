@@ -114,8 +114,12 @@ describe('project setup', () => {
           analysisSourceUrl: 'blob:recorded-source',
           analysisDebug: {
             phase: 'idle',
+            reportingAvailable: true,
+            canSavePackage: false,
             packageSizeLabel: null,
             errorMessage: null,
+            reportId: null,
+            receivedAt: null,
             expectedNoteCount: null,
             issueDescription: '',
             routeCategory: 'unknown',
@@ -143,8 +147,8 @@ describe('project setup', () => {
         onAnalysisDebugExpectedNoteCountChange={onExpectedNoteCount}
         onAnalysisDebugIssueDescriptionChange={onIssueDescription}
         onAnalysisDebugRouteCategoryChange={onRouteCategory}
-        onPrepareAnalysisDebug={onPrepareDebug}
-        onShareAnalysisDebug={vi.fn()}
+        onSendAnalysisDebug={onPrepareDebug}
+        onSaveAnalysisDebugPackage={vi.fn()}
         onTranspositionChange={vi.fn()}
         onAlignmentChange={vi.fn()}
         onNoteChange={vi.fn()}
@@ -160,7 +164,9 @@ describe('project setup', () => {
       'true',
     )
     const recording = screen.getByRole('region', { name: 'Record a melody' })
-    expect(within(recording).getByText(/Nothing is uploaded/)).toBeInTheDocument()
+    expect(
+      within(recording).getByText(/unless you explicitly tap.*Send bug report/),
+    ).toBeInTheDocument()
     await userEvent.click(within(recording).getByRole('button', { name: 'Start recording' }))
     expect(onStart).toHaveBeenCalledOnce()
     await userEvent.click(
@@ -191,17 +197,20 @@ describe('project setup', () => {
       target: { value: 'Only four appeared.' },
     })
     expect(onIssueDescription).toHaveBeenLastCalledWith('Only four appeared.')
-    await userEvent.click(
-      within(verifier).getByRole('button', { name: '1. Prepare debug package' }),
-    )
+    await userEvent.click(within(verifier).getByRole('button', { name: 'Send bug report' }))
     expect(onPrepareDebug).toHaveBeenCalledOnce()
   })
 
-  it('requires a separately enabled tap to share a prepared analysis debug package', async () => {
-    const onShare = vi.fn()
+  it('sends a report in one explicit action and offers a local fallback after upload failure', async () => {
+    const onSend = vi.fn()
+    const onSavePackage = vi.fn()
     const base = {
+      reportingAvailable: true,
+      canSavePackage: false,
       packageSizeLabel: '2.4 MiB',
       errorMessage: null,
+      reportId: null,
+      receivedAt: null,
       expectedNoteCount: 7,
       issueDescription: 'Four notes appeared.',
       routeCategory: 'built-in',
@@ -212,25 +221,60 @@ describe('project setup', () => {
         onExpectedNoteCountChange={vi.fn()}
         onIssueDescriptionChange={vi.fn()}
         onRouteCategoryChange={vi.fn()}
-        onPrepare={vi.fn()}
-        onShareOrSave={onShare}
+        onSend={onSend}
+        onSavePackage={onSavePackage}
       />,
     )
-    expect(screen.getByRole('button', { name: /2\. Share \/ Save/ })).toBeDisabled()
-    expect(screen.getByText(/Nothing is uploaded or shared unless/)).toBeInTheDocument()
+    expect(screen.getByText(/does not send a report until you tap/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Send bug report' }))
+    expect(onSend).toHaveBeenCalledOnce()
 
     rerender(
       <AnalysisDebugPanel
-        model={{ ...base, phase: 'ready' }}
+        model={{
+          ...base,
+          phase: 'error',
+          canSavePackage: true,
+          errorMessage: 'The report service could not be reached.',
+        }}
         onExpectedNoteCountChange={vi.fn()}
         onIssueDescriptionChange={vi.fn()}
         onRouteCategoryChange={vi.fn()}
-        onPrepare={vi.fn()}
-        onShareOrSave={onShare}
+        onSend={onSend}
+        onSavePackage={onSavePackage}
       />,
     )
-    await userEvent.click(screen.getByRole('button', { name: '2. Share / Save · 2.4 MiB' }))
-    expect(onShare).toHaveBeenCalledOnce()
+    expect(screen.getByRole('alert')).toHaveTextContent('Bug report delivery not confirmed')
+    await userEvent.click(screen.getByRole('button', { name: 'Retry sending report · 2.4 MiB' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save debug package' }))
+    expect(onSend).toHaveBeenCalledTimes(2)
+    expect(onSavePackage).toHaveBeenCalledOnce()
+  })
+
+  it('shows the validated report receipt after a direct upload', () => {
+    render(
+      <AnalysisDebugPanel
+        model={{
+          phase: 'complete',
+          reportingAvailable: true,
+          canSavePackage: false,
+          packageSizeLabel: '2.4 MiB',
+          errorMessage: null,
+          reportId: 'SS-7f034c18',
+          receivedAt: '2026-07-14T18:30:00.000Z',
+          expectedNoteCount: 7,
+          issueDescription: 'Four notes appeared.',
+          routeCategory: 'built-in',
+        }}
+        onExpectedNoteCountChange={vi.fn()}
+        onIssueDescriptionChange={vi.fn()}
+        onRouteCategoryChange={vi.fn()}
+        onSend={vi.fn()}
+        onSavePackage={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('status')).toHaveTextContent('Bug report sent')
+    expect(screen.getByRole('status')).toHaveTextContent('Report ID: SS-7f034c18')
   })
 
   it('shows recording status, elapsed context time, applied settings, and stop', async () => {

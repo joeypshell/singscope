@@ -1,0 +1,12 @@
+{
+  "imports": {
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.110.2",
+    "@zip.js/zip.js": "npm:@zip.js/zip.js@2.8.28",
+    "zod": "npm:zod@4.4.3"
+  },
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true
+  }
+}

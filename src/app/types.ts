@@ -22,14 +22,18 @@ export interface AppTargetPitchPoint {
   readonly gapReason?: TargetPitchGapReason | null | undefined
 }
 
-export type AnalysisDebugPhase = 'idle' | 'preparing' | 'ready' | 'sharing' | 'complete' | 'error'
+export type AnalysisDebugPhase = 'idle' | 'preparing' | 'uploading' | 'complete' | 'error'
 
 export type AnalysisDebugRouteCategory = 'built-in' | 'wired' | 'bluetooth' | 'unknown'
 
 export interface AnalysisDebugView {
   readonly phase: AnalysisDebugPhase
+  readonly reportingAvailable: boolean
+  readonly canSavePackage: boolean
   readonly packageSizeLabel: string | null
   readonly errorMessage: string | null
+  readonly reportId: string | null
+  readonly receivedAt: string | null
   readonly expectedNoteCount: number | null
   readonly issueDescription: string
   readonly routeCategory: AnalysisDebugRouteCategory

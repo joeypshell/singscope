@@ -1,6 +1,6 @@
 /// <reference types="node" />
 
-import { readFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 
 import {
   BlobReader,
@@ -10,19 +10,68 @@ import {
   type Entry,
   type FileEntry,
 } from '@zip.js/zip.js'
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page, type Route } from '@playwright/test'
 
 import { installDeterministicBrowserAdapters, openApp } from './helpers'
+
+const REPORT_URL = '**/functions/v1/analysis-report'
+const RECEIPT = {
+  format: 'singscope-analysis-report-receipt',
+  schemaVersion: 1,
+  reportId: '7f034c18-3f71-4cc8-9ae7-d353f5ef8001',
+  receivedAt: '2026-07-14T18:30:00.000Z',
+} as const
+const TICKET = {
+  format: 'singscope-analysis-report-ticket',
+  schemaVersion: 1,
+  ticket: 'playwright-ticket.signature',
+  difficulty: 4,
+  expiresAt: '2026-07-14T18:32:00.000Z',
+} as const
+
+interface CapturedReportUpload {
+  readonly bytes: number[]
+  readonly headers: Record<string, string>
+}
 
 test.setTimeout(90_000)
 
 test.beforeEach(async ({ page }) => {
   await installDeterministicBrowserAdapters(page)
+  await page.addInitScript(() => {
+    const uploads: CapturedReportUpload[] = []
+    const state = window as typeof window & {
+      __singscopeReportUploads?: CapturedReportUpload[]
+    }
+    state.__singscopeReportUploads = uploads
+    const originalFetch = window.fetch.bind(window)
+    window.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('/functions/v1/analysis-report') && init?.body instanceof Blob) {
+        uploads.push({
+          bytes: [...new Uint8Array(await init.body.arrayBuffer())],
+          headers: Object.fromEntries(new Headers(init.headers).entries()),
+        })
+      }
+      return originalFetch(input, init)
+    }
+  })
 })
 
-test('recorded-melody diagnostics require a fresh save tap and include raw evidence', async ({
-  page,
-}) => {
+async function capturedUploads(page: Page): Promise<CapturedReportUpload[]> {
+  return page.evaluate(() => {
+    const state = window as typeof window & {
+      __singscopeReportUploads?: CapturedReportUpload[]
+    }
+    return state.__singscopeReportUploads ?? []
+  })
+}
+
+function isTicketRequest(route: Route): boolean {
+  return route.request().headers()['content-type']?.startsWith('application/json') ?? false
+}
+
+async function recordDeterministicMelody(page: Page) {
   await openApp(page)
   await page.getByRole('button', { name: 'New project' }).click()
   await expect(page.getByRole('heading', { name: 'Reference and target' })).toBeVisible()
@@ -41,8 +90,31 @@ test('recorded-melody diagnostics require a fresh save tap and include raw evide
   await expect(page.getByText(/7 estimated notes from your recording/)).toBeVisible({
     timeout: 15_000,
   })
+  return page.getByRole('region', { name: 'Report a missed-note bug' })
+}
 
-  const debugPanel = page.getByRole('region', { name: 'Help diagnose a missed-note bug' })
+test('explicitly sends recorded-melody diagnostics once and includes raw evidence', async ({
+  page,
+}) => {
+  let uploadCount = 0
+  await page.route(REPORT_URL, async (route) => {
+    if (isTicketRequest(route)) {
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify(TICKET),
+      })
+      return
+    }
+    uploadCount += 1
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify(RECEIPT),
+    })
+  })
+
+  const debugPanel = await recordDeterministicMelody(page)
   await expect(debugPanel).toBeVisible()
   await debugPanel.getByLabel('Number of notes you played (optional)').fill('7')
   await debugPanel.getByLabel('Microphone route').selectOption('built-in')
@@ -50,24 +122,37 @@ test('recorded-melody diagnostics require a fresh save tap and include raw evide
     .getByLabel('What went wrong? (optional)')
     .fill('Seven piano notes were audible, but only four appeared in the target.')
 
-  const prepare = debugPanel.getByRole('button', { name: '1. Prepare debug package' })
-  const shareOrSave = debugPanel.getByRole('button', { name: /^2\. Share \/ Save/ })
-  await expect(shareOrSave).toBeDisabled()
+  const send = debugPanel.getByRole('button', { name: 'Send bug report' })
+  await expect(send).toBeEnabled()
+  expect(uploadCount).toBe(0)
 
   const downloads: string[] = []
   page.on('download', (download) => downloads.push(download.suggestedFilename()))
-  await prepare.click()
-  await expect(shareOrSave).toBeEnabled({ timeout: 20_000 })
+  await send.click()
+  await expect(debugPanel.getByText('Bug report sent', { exact: true })).toBeVisible({
+    timeout: 20_000,
+  })
+  await expect(
+    debugPanel.getByText(/Report ID: 7f034c18-3f71-4cc8-9ae7-d353f5ef8001/),
+  ).toBeVisible()
+  await expect(debugPanel.getByRole('button', { name: 'Report sent' })).toBeDisabled()
+
+  expect(uploadCount).toBe(1)
   expect(downloads).toEqual([])
+  const uploads = await capturedUploads(page)
+  expect(uploads).toHaveLength(1)
+  const upload = uploads[0]
+  if (upload === undefined) throw new Error('Report upload was not seen.')
+  expect(upload.headers['content-type']).toBe('application/zip')
+  expect(upload.headers['x-singscope-schema-version']).toBe('1')
+  expect(upload.headers['x-singscope-package-id']).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  )
+  expect(upload.headers['x-singscope-package-sha256']).toBe(
+    createHash('sha256').update(Buffer.from(upload.bytes)).digest('hex'),
+  )
 
-  const downloadPromise = page.waitForEvent('download')
-  await shareOrSave.click()
-  const download = await downloadPromise
-  expect(download.suggestedFilename()).toBe('singscope-analysis-debug.zip')
-
-  const downloadPath = await download.path()
-  const bytes = await readFile(downloadPath)
-  const reader = new ZipReader(new BlobReader(new Blob([Uint8Array.from(bytes)])))
+  const reader = new ZipReader(new BlobReader(new Blob([Uint8Array.from(upload.bytes)])))
   try {
     const entries = await reader.getEntries()
     const fileEntry = (name: string): FileEntry => {
@@ -131,4 +216,60 @@ test('recorded-melody diagnostics require a fresh save tap and include raw evide
   } finally {
     await reader.close()
   }
+})
+
+test('unconfirmed direct report offers idempotent retry plus local save', async ({ page }) => {
+  let uploadCount = 0
+  await page.route(REPORT_URL, async (route) => {
+    if (isTicketRequest(route)) {
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify(TICKET),
+      })
+      return
+    }
+    uploadCount += 1
+    if (uploadCount === 1) {
+      await route.fulfill({ status: 503, body: 'Unavailable' })
+      return
+    }
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify(RECEIPT),
+    })
+  })
+
+  const debugPanel = await recordDeterministicMelody(page)
+  await debugPanel.getByRole('button', { name: 'Send bug report' }).click()
+  await expect(
+    debugPanel.getByText('Bug report delivery not confirmed', { exact: true }),
+  ).toBeVisible({ timeout: 20_000 })
+  await expect(debugPanel.getByRole('button', { name: /Retry sending report/ })).toBeEnabled()
+  const save = debugPanel.getByRole('button', { name: 'Save debug package' })
+  await expect(save).toBeEnabled()
+  expect(uploadCount).toBe(1)
+
+  const downloadPromise = page.waitForEvent('download')
+  await save.click()
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toBe('singscope-analysis-debug.zip')
+  expect(uploadCount).toBe(1)
+
+  await debugPanel.getByRole('button', { name: /Retry sending report/ }).click()
+  await expect(debugPanel.getByText('Bug report sent', { exact: true })).toBeVisible({
+    timeout: 20_000,
+  })
+  expect(uploadCount).toBe(2)
+  const uploads = await capturedUploads(page)
+  expect(uploads).toHaveLength(2)
+  const firstUpload = uploads[0]
+  const secondUpload = uploads[1]
+  if (firstUpload === undefined || secondUpload === undefined) {
+    throw new Error('Both report attempts were not captured.')
+  }
+  expect(createHash('sha256').update(Buffer.from(secondUpload.bytes)).digest('hex')).toBe(
+    createHash('sha256').update(Buffer.from(firstUpload.bytes)).digest('hex'),
+  )
 })

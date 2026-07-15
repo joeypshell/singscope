@@ -58,8 +58,8 @@ export interface ProjectSetupScreenProps {
   readonly onAnalysisDebugIssueDescriptionChange?: ((description: string) => void) | undefined
   readonly onAnalysisDebugRouteCategoryChange?:
     ((route: AnalysisDebugRouteCategory) => void) | undefined
-  readonly onPrepareAnalysisDebug?: (() => void) | undefined
-  readonly onShareAnalysisDebug?: (() => void) | undefined
+  readonly onSendAnalysisDebug?: (() => void) | undefined
+  readonly onSaveAnalysisDebugPackage?: (() => void) | undefined
 }
 
 function SelectedFile({ label, name }: { readonly label: string; readonly name: string | null }) {
@@ -93,8 +93,8 @@ export function ProjectSetupScreen({
   onAnalysisDebugExpectedNoteCountChange,
   onAnalysisDebugIssueDescriptionChange,
   onAnalysisDebugRouteCategoryChange,
-  onPrepareAnalysisDebug,
-  onShareAnalysisDebug,
+  onSendAnalysisDebug,
+  onSaveAnalysisDebugPackage,
 }: ProjectSetupScreenProps) {
   const recordedMelodyAvailable =
     model.recordedMelody !== undefined &&
@@ -264,15 +264,15 @@ export function ProjectSetupScreen({
               onAnalysisDebugExpectedNoteCountChange &&
               onAnalysisDebugIssueDescriptionChange &&
               onAnalysisDebugRouteCategoryChange &&
-              onPrepareAnalysisDebug &&
-              onShareAnalysisDebug ? (
+              onSendAnalysisDebug &&
+              onSaveAnalysisDebugPackage ? (
                 <AnalysisDebugPanel
                   model={model.analysisDebug}
                   onExpectedNoteCountChange={onAnalysisDebugExpectedNoteCountChange}
                   onIssueDescriptionChange={onAnalysisDebugIssueDescriptionChange}
                   onRouteCategoryChange={onAnalysisDebugRouteCategoryChange}
-                  onPrepare={onPrepareAnalysisDebug}
-                  onShareOrSave={onShareAnalysisDebug}
+                  onSend={onSendAnalysisDebug}
+                  onSavePackage={onSaveAnalysisDebugPackage}
                 />
               ) : null}
             </section>
