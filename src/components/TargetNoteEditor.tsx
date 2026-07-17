@@ -1,5 +1,6 @@
 import { midiNoteName } from '../domain/pitch'
 import { ExactTimeInput } from './ExactTimeInput'
+import { MelodyKeyboard, type KeyboardNoteInput } from './MelodyKeyboard'
 import { TouchPianoRoll } from './TouchPianoRoll'
 
 export interface EditableTargetNote {
@@ -16,6 +17,7 @@ export interface TargetNoteEditorProps {
   readonly durationSeconds?: number | undefined
   readonly onChange: (note: EditableTargetNote) => void
   readonly onAdd: () => void
+  readonly onAddKeyboardNote?: ((input: KeyboardNoteInput) => void) | undefined
   readonly onRemove: (id: string) => void
 }
 
@@ -30,9 +32,11 @@ export function TargetNoteEditor({
   durationSeconds,
   onChange,
   onAdd,
+  onAddKeyboardNote,
   onRemove,
 }: TargetNoteEditorProps) {
   const pianoNotes = notes.map((note) => pianoNoteName(note.midiNote, transpositionSemitones))
+  const lastNote = notes.at(-1)
 
   return (
     <section aria-labelledby="target-note-heading">
@@ -49,6 +53,17 @@ export function TargetNoteEditor({
         <p aria-label="Piano note sequence">
           <strong>Piano notes after transpose:</strong> {pianoNotes.join(' · ')}
         </p>
+      ) : null}
+      {onAddKeyboardNote ? (
+        <MelodyKeyboard
+          noteCount={notes.length}
+          lastDisplayedMidiNote={lastNote ? lastNote.midiNote + transpositionSemitones : null}
+          transpositionSemitones={transpositionSemitones}
+          onAddNote={onAddKeyboardNote}
+          onUndoLastNote={() => {
+            if (lastNote) onRemove(lastNote.id)
+          }}
+        />
       ) : null}
       <TouchPianoRoll
         notes={notes}

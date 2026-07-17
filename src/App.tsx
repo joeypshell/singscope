@@ -1510,27 +1510,89 @@ function SetupRoute() {
           error: null,
         })
       }
-      onAddNote={() =>
-        patch({
-          targetMode: state.targetMode === 'isolated-vocal' ? 'isolated-vocal' : 'manual',
-          notes: [
-            ...state.notes,
-            {
-              id: crypto.randomUUID(),
-              startSeconds: state.notes.at(-1)?.endSeconds ?? 0,
-              endSeconds: (state.notes.at(-1)?.endSeconds ?? 0) + 1,
-              midiNote: state.notes.at(-1)?.midiNote ?? 60,
-              lyric: '',
-              scorable: true,
-            },
-          ],
-          targetStatus:
-            state.targetMode === 'isolated-vocal'
-              ? 'Edited notes will be authoritative in the next analyzed revision.'
-              : 'Manual notes are authoritative after save.',
+      onAddNote={() => {
+        const id = crypto.randomUUID()
+        setState((current) => {
+          const previous = current.notes.at(-1)
+          const startSeconds = previous?.endSeconds ?? 0
+          return {
+            ...current,
+            targetMode: current.targetMode === 'isolated-vocal' ? 'isolated-vocal' : 'manual',
+            notes: [
+              ...current.notes,
+              {
+                id,
+                startSeconds,
+                endSeconds: startSeconds + 1,
+                midiNote: previous?.midiNote ?? 60,
+                lyric: '',
+                scorable: true,
+              },
+            ],
+            targetStatus:
+              current.targetMode === 'isolated-vocal'
+                ? 'Edited notes will be authoritative in the next analyzed revision.'
+                : 'Manual notes are authoritative after save.',
+            error: null,
+          }
         })
+      }}
+      onAddKeyboardNote={(input) => {
+        const id = crypto.randomUUID()
+        setState((current) => {
+          const midiNote = input.displayedMidiNote - current.transpositionSemitones
+          if (!Number.isInteger(midiNote) || midiNote < 0 || midiNote > 127) {
+            return {
+              ...current,
+              error: 'That piano key falls outside MIDI 0–127 at the current transpose.',
+            }
+          }
+          const durationSeconds =
+            Number.isFinite(input.durationSeconds) && input.durationSeconds > 0
+              ? Math.min(60, input.durationSeconds)
+              : 1
+          const gapSeconds =
+            Number.isFinite(input.gapSeconds) && input.gapSeconds >= 0
+              ? Math.min(60, input.gapSeconds)
+              : 0
+          const latestEndSeconds = current.notes.reduce(
+            (latest, note) =>
+              Number.isFinite(note.endSeconds) ? Math.max(latest, note.endSeconds) : latest,
+            0,
+          )
+          const startSeconds =
+            current.notes.length === 0
+              ? 0
+              : Math.round((latestEndSeconds + gapSeconds) * 1000) / 1000
+          const endSeconds = Math.round((startSeconds + durationSeconds) * 1000) / 1000
+          return {
+            ...current,
+            targetMode: 'manual',
+            targetPitchPoints: [],
+            notes: [
+              ...current.notes,
+              {
+                id,
+                startSeconds,
+                endSeconds,
+                midiNote,
+                lyric: '',
+                scorable: true,
+              },
+            ],
+            targetStatus: 'Piano-entered notes are authoritative after save.',
+            error: null,
+          }
+        })
+      }}
+      onRemoveNote={(id) =>
+        setState((current) => ({
+          ...current,
+          notes: current.notes.filter((note) => note.id !== id),
+          targetStatus: 'Edited notes will be authoritative in the next revision.',
+          error: null,
+        }))
       }
-      onRemoveNote={(id) => patch({ notes: state.notes.filter((note) => note.id !== id) })}
       onSave={() => {
         patch({ busy: true, error: null })
         void (async () => {

@@ -1,6 +1,7 @@
 import { StatusBanner } from '../../components/StatusBanner'
 import { PitchChartCanvas } from '../../components/PitchChartCanvas'
 import { TargetNoteEditor, type EditableTargetNote } from '../../components/TargetNoteEditor'
+import type { KeyboardNoteInput } from '../../components/MelodyKeyboard'
 import type { PitchChartScene } from '../../rendering/pitch-chart'
 import { RecordedMelodyControl, type RecordedMelodyView } from './RecordedMelodyControl'
 import { AnalysisDebugPanel } from './AnalysisDebugPanel'
@@ -52,6 +53,7 @@ export interface ProjectSetupScreenProps {
   readonly onAlignmentChange: (seconds: number) => void
   readonly onNoteChange: (note: EditableTargetNote) => void
   readonly onAddNote: () => void
+  readonly onAddKeyboardNote?: ((input: KeyboardNoteInput) => void) | undefined
   readonly onRemoveNote: (id: string) => void
   readonly onSave: () => void
   readonly onAnalysisDebugExpectedNoteCountChange?: ((count: number | null) => void) | undefined
@@ -88,6 +90,7 @@ export function ProjectSetupScreen({
   onAlignmentChange,
   onNoteChange,
   onAddNote,
+  onAddKeyboardNote,
   onRemoveNote,
   onSave,
   onAnalysisDebugExpectedNoteCountChange,
@@ -310,6 +313,7 @@ export function ProjectSetupScreen({
             durationSeconds={model.analysisScene?.viewport.endSeconds}
             onChange={onNoteChange}
             onAdd={onAddNote}
+            onAddKeyboardNote={model.targetMode === 'manual' ? onAddKeyboardNote : undefined}
             onRemove={onRemoveNote}
           />
         </section>
