@@ -56,8 +56,11 @@ export function TargetNoteEditor({
       ) : null}
       {onAddKeyboardNote ? (
         <MelodyKeyboard
-          noteCount={notes.length}
-          lastDisplayedMidiNote={lastNote ? lastNote.midiNote + transpositionSemitones : null}
+          notes={notes.map((note) => ({
+            displayedMidiNote: note.midiNote + transpositionSemitones,
+            startSeconds: note.startSeconds,
+            endSeconds: note.endSeconds,
+          }))}
           transpositionSemitones={transpositionSemitones}
           onAddNote={onAddKeyboardNote}
           onUndoLastNote={() => {

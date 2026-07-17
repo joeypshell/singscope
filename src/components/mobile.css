@@ -106,16 +106,21 @@
 
 .ss-keyboard-settings {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.75rem;
   align-items: end;
 }
 
+.ss-keyboard-settings > * {
+  min-inline-size: 0;
+}
+
 .ss-octave-control {
   display: grid;
-  grid-template-columns: 44px minmax(6rem, 1fr) 44px;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
   align-items: center;
   gap: 0.4rem;
+  max-inline-size: 100%;
 }
 
 .ss-octave-control .ss-button {
@@ -182,15 +187,25 @@
 }
 
 .ss-keyboard-summary {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   align-items: center;
-  justify-content: space-between;
   gap: 0.75rem;
 }
 
 .ss-keyboard-summary output {
   font-weight: 750;
+}
+
+.ss-keyboard-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.65rem;
+}
+
+.ss-keyboard-audio-error {
+  margin-block: 0;
+  color: #8a291f;
+  font-weight: 680;
 }
 
 .ss-card {
@@ -570,6 +585,19 @@
   }
   .ss-chart canvas {
     max-block-size: calc(100dvh - 6rem);
+  }
+}
+
+@media (min-width: 700px) {
+  .ss-keyboard-settings {
+    grid-template-columns: minmax(13rem, 1.4fr) repeat(2, minmax(9rem, 1fr));
+  }
+  .ss-keyboard-summary {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .ss-keyboard-actions {
+    grid-template-columns: repeat(2, minmax(10rem, auto));
+    justify-content: end;
   }
 }
 
