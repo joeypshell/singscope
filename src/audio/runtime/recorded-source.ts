@@ -212,6 +212,9 @@ export class RecordedSourceCapture {
         ...(this.dependencies.window ? { window: this.dependencies.window } : {}),
         ...(this.dependencies.mediaDevices ? { mediaDevices: this.dependencies.mediaDevices } : {}),
         captureSettings: settings,
+        // Safari's MP4/AAC MediaRecorder output is most reliable for immediate
+        // decodeAudioData() use when stop() finalizes one complete container.
+        timesliceMs: null,
       })
       this.recorder = recorder
       recorder.subscribe((value) => this.onRecorderSnapshot(value))
@@ -234,10 +237,11 @@ export class RecordedSourceCapture {
     this.expectedSequence += 1
     if (this.discarded) return Promise.resolve()
 
-    // ForegroundRecorder observes the full MediaRecorder byte count and will
-    // finalize with size-limit. Do not retain a crossing encoded chunk because
-    // slicing it could corrupt its container.
-    if (this.capturedBytes + chunk.size > RECORDED_SOURCE_LIMITS.maxBytes) return Promise.resolve()
+    // Never slice an encoded container. A one-shot source recording that is too
+    // large must fail clearly instead of returning an empty or truncated file.
+    if (this.capturedBytes + chunk.size > RECORDED_SOURCE_LIMITS.maxBytes) {
+      throw new Error('Recorded melody exceeds the 8 MiB limit. Record a shorter melody.')
+    }
     this.chunks.push(chunk)
     this.capturedBytes += chunk.size
     this.patch({ byteLength: this.capturedBytes })
@@ -254,6 +258,9 @@ export class RecordedSourceCapture {
   ): Promise<void> {
     if (this.discarded) return
     const blob = new Blob(this.chunks, { type: input.mimeType })
+    if (blob.size === 0) {
+      throw new Error('Safari finished the recording without usable audio bytes. Record again.')
+    }
     const result: RecordedSourceResult = {
       blob,
       mimeType: input.mimeType,

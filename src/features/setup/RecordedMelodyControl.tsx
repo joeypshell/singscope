@@ -125,7 +125,7 @@ export function RecordedMelodyControl({
         <p>Record up to 60 seconds (8 MiB maximum) and keep SingScope in the foreground.</p>
         <p>
           Recording and analysis stay on this device unless you explicitly tap the warned Send bug
-          report button after analysis.
+          report button when a report option appears.
         </p>
       </div>
 

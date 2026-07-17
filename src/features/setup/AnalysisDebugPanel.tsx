@@ -28,17 +28,29 @@ export function AnalysisDebugPanel({
   onSavePackage,
 }: AnalysisDebugPanelProps) {
   const busy = model.phase === 'preparing' || model.phase === 'uploading'
+  const decodeFailure = model.context === 'decode-failure'
 
   return (
     <section className="ss-card ss-stack" aria-labelledby="analysis-debug-heading">
       <div>
-        <h3 id="analysis-debug-heading">Report a missed-note bug</h3>
-        <p>
-          One tap prepares and sends the exact analyzed source audio—your microphone audio when
-          recorded here—plus the raw analysis, estimated notes, browser version, viewport, display
-          mode, and applied capture settings. SingScope does not send a report until you tap the
-          button below.
-        </p>
+        <h3 id="analysis-debug-heading">
+          {decodeFailure ? 'Report this recording failure' : 'Report a missed-note bug'}
+        </h3>
+        {decodeFailure ? (
+          <p>
+            One tap prepares and sends the exact microphone recording that this browser could not
+            decode, plus the failure description, browser version, viewport, display mode, and
+            applied capture settings. SingScope does not send a report until you tap the button
+            below.
+          </p>
+        ) : (
+          <p>
+            One tap prepares and sends the exact analyzed source audio—your microphone audio when
+            recorded here—plus the raw analysis, estimated notes, browser version, viewport, display
+            mode, and applied capture settings. SingScope does not send a report until you tap the
+            button below.
+          </p>
+        )}
       </div>
       <div className="ss-stack">
         <label className="ss-field">

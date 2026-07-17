@@ -113,6 +113,7 @@ describe('project setup', () => {
           },
           analysisSourceUrl: 'blob:recorded-source',
           analysisDebug: {
+            context: 'analysis-result',
             phase: 'idle',
             reportingAvailable: true,
             canSavePackage: false,
@@ -205,6 +206,7 @@ describe('project setup', () => {
     const onSend = vi.fn()
     const onSavePackage = vi.fn()
     const base = {
+      context: 'analysis-result',
       reportingAvailable: true,
       canSavePackage: false,
       packageSizeLabel: '2.4 MiB',
@@ -255,6 +257,7 @@ describe('project setup', () => {
     render(
       <AnalysisDebugPanel
         model={{
+          context: 'analysis-result',
           phase: 'complete',
           reportingAvailable: true,
           canSavePackage: false,

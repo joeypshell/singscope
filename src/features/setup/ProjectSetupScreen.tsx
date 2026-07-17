@@ -101,6 +101,22 @@ export function ProjectSetupScreen({
     onStartRecordedMelody !== undefined &&
     onStopRecordedMelody !== undefined &&
     onRecordMelodyAgain !== undefined
+  const analysisDebugPanel =
+    model.analysisDebug &&
+    onAnalysisDebugExpectedNoteCountChange &&
+    onAnalysisDebugIssueDescriptionChange &&
+    onAnalysisDebugRouteCategoryChange &&
+    onSendAnalysisDebug &&
+    onSaveAnalysisDebugPackage ? (
+      <AnalysisDebugPanel
+        model={model.analysisDebug}
+        onExpectedNoteCountChange={onAnalysisDebugExpectedNoteCountChange}
+        onIssueDescriptionChange={onAnalysisDebugIssueDescriptionChange}
+        onRouteCategoryChange={onAnalysisDebugRouteCategoryChange}
+        onSend={onSendAnalysisDebug}
+        onSavePackage={onSaveAnalysisDebugPackage}
+      />
+    ) : null
 
   return (
     <main className="ss-screen">
@@ -260,23 +276,12 @@ export function ProjectSetupScreen({
                 Hatched spans can still contain a rejected raw candidate. The editable note list
                 below is authoritative for scoring.
               </p>
-              {model.analysisDebug &&
-              onAnalysisDebugExpectedNoteCountChange &&
-              onAnalysisDebugIssueDescriptionChange &&
-              onAnalysisDebugRouteCategoryChange &&
-              onSendAnalysisDebug &&
-              onSaveAnalysisDebugPackage ? (
-                <AnalysisDebugPanel
-                  model={model.analysisDebug}
-                  onExpectedNoteCountChange={onAnalysisDebugExpectedNoteCountChange}
-                  onIssueDescriptionChange={onAnalysisDebugIssueDescriptionChange}
-                  onRouteCategoryChange={onAnalysisDebugRouteCategoryChange}
-                  onSend={onSendAnalysisDebug}
-                  onSavePackage={onSaveAnalysisDebugPackage}
-                />
-              ) : null}
+              {analysisDebugPanel}
             </section>
           ) : null}
+          {model.targetMode === 'isolated-vocal' && !model.analysisScene
+            ? analysisDebugPanel
+            : null}
           <div className="ss-field-grid">
             <label className="ss-field">
               <span>Transpose (semitones)</span>

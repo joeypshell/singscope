@@ -430,6 +430,7 @@ describe('microphone and recording helpers', () => {
       createRecorder: () => mediaRecorder as unknown as MediaRecorder,
     })
     recorder.startFromGesture()
+    expect(mediaRecorder.start).toHaveBeenCalledWith(1000)
     mutableClock.currentTime = 21
     const chunkEvent = new Event('dataavailable') as BlobEvent
     Object.defineProperty(chunkEvent, 'data', { value: new Blob(['audio']) })
