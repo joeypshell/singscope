@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
+import { MelodyPreviewPlayer, type MelodyPreviewNote } from '../audio/runtime/melody-preview'
 import { midiNoteName } from '../domain/pitch'
 
 const MIN_OCTAVE = 1
@@ -24,8 +25,7 @@ export interface KeyboardNoteInput {
 }
 
 export interface MelodyKeyboardProps {
-  readonly noteCount: number
-  readonly lastDisplayedMidiNote?: number | null | undefined
+  readonly notes: readonly MelodyPreviewNote[]
   readonly transpositionSemitones: number
   readonly onAddNote: (input: KeyboardNoteInput) => void
   readonly onUndoLastNote: () => void
@@ -49,22 +49,93 @@ function formatSeconds(value: number): string {
 }
 
 export function MelodyKeyboard({
-  noteCount,
-  lastDisplayedMidiNote,
+  notes,
   transpositionSemitones,
   onAddNote,
   onUndoLastNote,
 }: MelodyKeyboardProps) {
+  const lastDisplayedMidiNote = notes.at(-1)?.displayedMidiNote
   const [octave, setOctave] = useState(() => octaveForMidiNote(lastDisplayedMidiNote))
   const [durationSeconds, setDurationSeconds] = useState(1)
   const [gapSeconds, setGapSeconds] = useState(0)
   const [announcement, setAnnouncement] = useState('')
+  const [audioError, setAudioError] = useState<string | null>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const previewPlayer = useRef<MelodyPreviewPlayer | null>(null)
+
+  const getPreviewPlayer = () => {
+    previewPlayer.current ??= new MelodyPreviewPlayer()
+    return previewPlayer.current
+  }
+
+  const stopPlayback = (announcementText?: string) => {
+    previewPlayer.current?.stopAll()
+    setIsPlaying(false)
+    if (announcementText) setAnnouncement(announcementText)
+  }
+
+  const handleAudioFailure = () => {
+    setIsPlaying(false)
+    setAudioError('Sound preview could not start. Check the device volume, then tap again.')
+  }
+
+  useEffect(() => {
+    const stopForBackground = () => {
+      if (document.visibilityState !== 'visible') {
+        previewPlayer.current?.stopAll()
+        setIsPlaying(false)
+      }
+    }
+    const stopForPageHide = () => {
+      previewPlayer.current?.stopAll()
+      setIsPlaying(false)
+    }
+    document.addEventListener('visibilitychange', stopForBackground)
+    window.addEventListener('pagehide', stopForPageHide)
+    return () => {
+      document.removeEventListener('visibilitychange', stopForBackground)
+      window.removeEventListener('pagehide', stopForPageHide)
+      const player = previewPlayer.current
+      previewPlayer.current = null
+      if (player) void player.close().catch(() => undefined)
+    }
+  }, [])
 
   const addPitch = (displayedMidiNote: number) => {
     const noteName = midiNoteName(displayedMidiNote)
     if (noteName === null) return
     onAddNote({ displayedMidiNote, durationSeconds, gapSeconds })
+    setIsPlaying(false)
+    setAudioError(null)
+    try {
+      void getPreviewPlayer().audition(displayedMidiNote).catch(handleAudioFailure)
+    } catch {
+      handleAudioFailure()
+    }
     setAnnouncement(`Added ${spokenNoteName(noteName)}.`)
+  }
+
+  const toggleMelodyPlayback = () => {
+    if (isPlaying) {
+      stopPlayback('Stopped melody preview.')
+      return
+    }
+    setAudioError(null)
+    try {
+      const result = getPreviewPlayer().play(notes, () => {
+        setIsPlaying(false)
+        setAnnouncement('Melody preview finished.')
+      })
+      setIsPlaying(true)
+      setAnnouncement(
+        result.truncated
+          ? `Playing the first ${result.noteCount.toString()} notes of the melody preview.`
+          : 'Playing melody preview.',
+      )
+      void result.activation.catch(handleAudioFailure)
+    } catch {
+      handleAudioFailure()
+    }
   }
 
   const pianoKey = (pitchClass: number, kind: 'white' | 'black', left?: string) => {
@@ -93,8 +164,9 @@ export function MelodyKeyboard({
       <div>
         <h4 id="melody-keyboard-heading">Enter melody with piano</h4>
         <p id="melody-keyboard-help">
-          Tap one key per note. Keys match the final piano pitch after transpose. Each new note is
-          placed after the current sequence; adjust exact pitch and timing below.
+          Tap one key per note and you will hear its final pitch after transpose. Each new note is
+          placed after the current sequence; adjust exact pitch and timing below, then play the
+          melody so far.
         </p>
       </div>
 
@@ -165,20 +237,38 @@ export function MelodyKeyboard({
 
       <div className="ss-keyboard-summary">
         <output aria-live="polite">
-          {noteCount.toString()} {noteCount === 1 ? 'note' : 'notes'} entered.
+          {notes.length.toString()} {notes.length === 1 ? 'note' : 'notes'} entered.
         </output>
-        <button
-          className="ss-button"
-          type="button"
-          disabled={noteCount === 0}
-          onClick={() => {
-            onUndoLastNote()
-            setAnnouncement('Removed the last note.')
-          }}
-        >
-          Undo last note
-        </button>
+        <div className="ss-keyboard-actions">
+          <button
+            className="ss-button ss-button--primary"
+            type="button"
+            disabled={notes.length === 0}
+            aria-pressed={isPlaying}
+            onClick={toggleMelodyPlayback}
+          >
+            <span aria-hidden="true">{isPlaying ? '■' : '▶'}</span>{' '}
+            {isPlaying ? 'Stop playback' : 'Play melody so far'}
+          </button>
+          <button
+            className="ss-button"
+            type="button"
+            disabled={notes.length === 0}
+            onClick={() => {
+              stopPlayback()
+              onUndoLastNote()
+              setAnnouncement('Removed the last note.')
+            }}
+          >
+            Undo last note
+          </button>
+        </div>
       </div>
+      {audioError ? (
+        <p className="ss-keyboard-audio-error" role="alert">
+          {audioError} Your entered notes are unchanged.
+        </p>
+      ) : null}
       <p className="ss-visually-hidden" role="status">
         {announcement}
       </p>

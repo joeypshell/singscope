@@ -255,6 +255,14 @@ test('manual piano entry preserves every tap, timing, transpose, undo, and reloa
     await expect(ends.nth(index)).toHaveValue(value)
   }
 
+  await keyboard.getByRole('button', { name: 'Play melody so far' }).click()
+  const stopPreview = keyboard.getByRole('button', { name: 'Stop playback' })
+  await expect(stopPreview).toBeVisible()
+  await expect(stopPreview).toHaveAttribute('aria-pressed', 'true')
+  await stopPreview.click()
+  await expect(keyboard.getByRole('button', { name: 'Play melody so far' })).toBeVisible()
+  await expect(keyboard.getByRole('alert')).toHaveCount(0)
+
   await keyboard.getByRole('button', { name: 'Undo last note' }).click()
   await expect(keyboard.getByText('6 notes entered.')).toBeVisible()
   await expect(midiNotes).toHaveCount(6)
