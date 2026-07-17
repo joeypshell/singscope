@@ -24,9 +24,12 @@ export interface AppTargetPitchPoint {
 
 export type AnalysisDebugPhase = 'idle' | 'preparing' | 'uploading' | 'complete' | 'error'
 
+export type AnalysisDebugContext = 'analysis-result' | 'decode-failure'
+
 export type AnalysisDebugRouteCategory = 'built-in' | 'wired' | 'bluetooth' | 'unknown'
 
 export interface AnalysisDebugView {
+  readonly context: AnalysisDebugContext
   readonly phase: AnalysisDebugPhase
   readonly reportingAvailable: boolean
   readonly canSavePackage: boolean

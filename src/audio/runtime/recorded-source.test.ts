@@ -26,13 +26,17 @@ class FakeTrack extends EventTarget {
 
 class FakeMediaRecorder extends EventTarget {
   state: RecordingState = 'inactive'
+  finalChunk: Blob | null = null
   readonly start = vi.fn((timeslice?: number) => {
     void timeslice
     this.state = 'recording'
   })
   readonly stop = vi.fn(() => {
     this.state = 'inactive'
-    this.dispatchEvent(new Event('stop'))
+    queueMicrotask(() => {
+      if (this.finalChunk) this.emitChunk(this.finalChunk)
+      this.dispatchEvent(new Event('stop'))
+    })
   })
 
   constructor(readonly mimeType: string) {
@@ -95,7 +99,7 @@ function fixture(
 }
 
 describe('RecordedSourceCapture', () => {
-  it('records one-second chunks and returns the actual MIME with canonical duration', async () => {
+  it('records one finalized source blob and returns the actual MIME with canonical duration', async () => {
     const { capture, context, recorder, request, track } = fixture()
     const phases: string[] = []
     capture.subscribe((snapshot) => phases.push(snapshot.phase))
@@ -104,14 +108,14 @@ describe('RecordedSourceCapture', () => {
 
     expect(request).toHaveBeenCalledWith({ profile: 'raw' }, undefined)
     expect(context.resume).toHaveBeenCalledOnce()
-    expect(recorder.start).toHaveBeenCalledWith(1000)
+    expect(recorder.start).toHaveBeenCalledWith()
     expect(capture.getSnapshot()).toMatchObject({
       phase: 'recording',
       settings: SETTINGS,
     })
 
     context.currentTime = 11.25
-    recorder.emitChunk(new Blob(['encoded-audio'], { type: 'audio/mp4' }))
+    recorder.finalChunk = new Blob(['encoded-audio'], { type: 'audio/mp4' })
     const result = await capture.stop()
 
     expect(result).toEqual(await capture.result)
@@ -131,7 +135,7 @@ describe('RecordedSourceCapture', () => {
     const { capture, context, recorder, track, visibility } = fixture()
     await capture.start()
     context.currentTime = 12
-    recorder.emitChunk(new Blob(['partial']))
+    recorder.finalChunk = new Blob(['partial'])
 
     visibility.visibilityState = 'hidden'
     visibility.dispatchEvent(new Event('visibilitychange'))
@@ -144,28 +148,46 @@ describe('RecordedSourceCapture', () => {
     expect(capture.getSnapshot().phase).toBe('complete')
   })
 
-  it('keeps the last complete encoded chunk when the 8 MiB limit is crossed', async () => {
+  it('rejects an oversized finalized source instead of returning a corrupt container', async () => {
     const { capture, recorder } = fixture()
     await capture.start()
-    const retained = new Blob([new Uint8Array(RECORDED_SOURCE_LIMITS.maxBytes - 1024)])
-    recorder.emitChunk(retained)
-    recorder.emitChunk(new Blob([new Uint8Array(2048)]))
+    recorder.finalChunk = new Blob([new Uint8Array(RECORDED_SOURCE_LIMITS.maxBytes + 1)])
 
-    const result = await capture.result
-    expect(result.partialReason).toBe('size-limit')
-    expect(result.blob.size).toBe(retained.size)
-    expect(result.blob.size).toBeLessThanOrEqual(RECORDED_SOURCE_LIMITS.maxBytes)
+    await expect(capture.stop()).rejects.toThrow('Recorded melody exceeds the 8 MiB limit')
+    expect(capture.getSnapshot()).toMatchObject({
+      phase: 'error',
+      error: 'Recorded melody exceeds the 8 MiB limit. Record a shorter melody.',
+    })
   })
 
-  it('uses AudioContext time to stop at the 60-second source limit', async () => {
-    const { capture, context, recorder } = fixture()
-    await capture.start()
-    context.currentTime += RECORDED_SOURCE_LIMITS.maxDurationSeconds
-    recorder.emitChunk(new Blob(['last-complete-chunk']))
+  it('uses a monitor only to sample AudioContext time at the 60-second source limit', async () => {
+    vi.useFakeTimers()
+    try {
+      const { capture, context, recorder } = fixture()
+      await capture.start()
+      recorder.finalChunk = new Blob(['complete-container'])
+      context.currentTime += RECORDED_SOURCE_LIMITS.maxDurationSeconds
+      await vi.advanceTimersByTimeAsync(250)
 
-    const result = await capture.result
-    expect(result.partialReason).toBe('duration-limit')
-    expect(result.durationSeconds).toBe(RECORDED_SOURCE_LIMITS.maxDurationSeconds)
+      const result = await capture.result
+      expect(result.partialReason).toBe('duration-limit')
+      expect(result.durationSeconds).toBe(RECORDED_SOURCE_LIMITS.maxDurationSeconds)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports an empty final Safari recording instead of attempting to decode it', async () => {
+    const { capture } = fixture()
+    await capture.start()
+
+    await expect(capture.stop()).rejects.toThrow(
+      'Safari finished the recording without usable audio bytes',
+    )
+    expect(capture.getSnapshot()).toMatchObject({
+      phase: 'error',
+      error: 'Safari finished the recording without usable audio bytes. Record again.',
+    })
   })
 
   it('discards an active capture and releases every host resource', async () => {

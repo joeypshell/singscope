@@ -218,6 +218,95 @@ test('explicitly sends recorded-melody diagnostics once and includes raw evidenc
   }
 })
 
+test('keeps a Safari decode failure directly reportable with the failed recording', async ({
+  page,
+}) => {
+  await page.route(REPORT_URL, async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify(isTicketRequest(route) ? TICKET : RECEIPT),
+    })
+  })
+  await openApp(page)
+  await page.evaluate(() => {
+    Object.defineProperty(window.AudioContext.prototype, 'decodeAudioData', {
+      configurable: true,
+      value: () => Promise.reject(new DOMException('Decoding failed', 'EncodingError')),
+    })
+  })
+  await page.getByRole('button', { name: 'New project' }).click()
+  await page.getByLabel('Project title').fill('Decode failure evidence')
+  await page
+    .getByRole('group', { name: 'Target source' })
+    .getByRole('button', { name: 'Audio / record' })
+    .click()
+
+  const recorder = page.getByRole('region', { name: 'Record a melody' })
+  await recorder.getByRole('button', { name: 'Start recording' }).click()
+  await expect(recorder.getByRole('status')).toContainText('Recording melody')
+  await recorder.getByRole('button', { name: 'Stop and analyze' }).click()
+
+  await expect(recorder.getByRole('alert')).toContainText('Recording needs attention')
+  await expect(recorder).toContainText('could not decode this audio for pitch analysis')
+  const debugPanel = page.getByRole('region', { name: 'Report this recording failure' })
+  await expect(debugPanel).toBeVisible()
+  const description = debugPanel.getByLabel('What went wrong? (optional)')
+  await expect(description).toHaveValue(
+    /Recording decode failed before pitch analysis: Decoding failed/,
+  )
+  await description.fill('Happened twice on this iPhone.')
+  await debugPanel.getByLabel('Number of notes you played (optional)').fill('7')
+  await debugPanel.getByRole('button', { name: 'Send bug report' }).click()
+  await expect(debugPanel.getByText('Bug report sent', { exact: true })).toBeVisible({
+    timeout: 20_000,
+  })
+
+  const uploads = await capturedUploads(page)
+  expect(uploads).toHaveLength(1)
+  const upload = uploads[0]
+  if (upload === undefined) throw new Error('Decode-failure report upload was not seen.')
+  const reader = new ZipReader(new BlobReader(new Blob([Uint8Array.from(upload.bytes)])))
+  try {
+    const entries = await reader.getEntries()
+    const fileEntry = (name: string): FileEntry => {
+      const entry = entries.find((candidate) => candidate.filename === name)
+      if (entry === undefined || entry.directory)
+        throw new Error(`${name} is missing from the ZIP.`)
+      return entry
+    }
+    const manifest = JSON.parse(await fileEntry('manifest.json').getData(new TextWriter())) as {
+      sourceAudioPath: string
+      contourPointCount: number
+      candidateNoteCount: number
+    }
+    expect(manifest.contourPointCount).toBe(0)
+    expect(manifest.candidateNoteCount).toBe(0)
+    const sourceBytes = await fileEntry(manifest.sourceAudioPath).getData(new Uint8ArrayWriter())
+    expect(sourceBytes.byteLength).toBeGreaterThan(44)
+    const diagnostics = JSON.parse(
+      await fileEntry('diagnostics.json').getData(new TextWriter()),
+    ) as {
+      userReport: { expectedNoteCount: number | null; description: string | null }
+      capture: {
+        decodedDurationSeconds: number | null
+        decodedSampleRateHz: number | null
+        decodedChannelCount: number | null
+      }
+    }
+    expect(diagnostics.userReport.expectedNoteCount).toBe(7)
+    expect(diagnostics.userReport.description).toContain('Decoding failed')
+    expect(diagnostics.userReport.description).toContain(
+      'User note: Happened twice on this iPhone.',
+    )
+    expect(diagnostics.capture.decodedDurationSeconds).toBeNull()
+    expect(diagnostics.capture.decodedSampleRateHz).toBeNull()
+    expect(diagnostics.capture.decodedChannelCount).toBeNull()
+  } finally {
+    await reader.close()
+  }
+})
+
 test('unconfirmed direct report offers idempotent retry plus local save', async ({ page }) => {
   let uploadCount = 0
   await page.route(REPORT_URL, async (route) => {

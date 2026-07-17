@@ -333,11 +333,13 @@ interface AnalysisDebugDraft {
   readonly analysis: MonophonicAnalysisResult
   readonly detectorConfig: PitchDetectorConfig
   readonly segmentationConfig: CandidateSegmentationOptions
-  readonly decodedSampleRateHz: number
-  readonly decodedChannelCount: number
+  readonly decodedDurationSeconds: number | null
+  readonly decodedSampleRateHz: number | null
+  readonly decodedChannelCount: number | null
   readonly recorderDurationSeconds: number | null
   readonly captureSettings: CaptureSettings | null
   readonly partialReason: RecordingInterruption | null
+  readonly failureDescription: string | null
 }
 
 interface PreparedAnalysisDebug {
@@ -346,6 +348,7 @@ interface PreparedAnalysisDebug {
 }
 
 const INITIAL_ANALYSIS_DEBUG: AnalysisDebugView = {
+  context: 'analysis-result',
   phase: 'idle',
   reportingAvailable: ANALYSIS_REPORT_CONFIGURATION !== null,
   canSavePackage: false,
@@ -440,6 +443,54 @@ interface AnalyzedSource {
   readonly decodedChannelCount: number
 }
 
+class SourceAudioDecodeError extends Error {
+  readonly decoderDetail: string
+
+  constructor(cause: unknown) {
+    super('This browser could not decode this audio for pitch analysis.', { cause })
+    this.name = 'SourceAudioDecodeError'
+    this.decoderDetail = asMessage(cause)
+  }
+}
+
+function createMonophonicAnalysisConfiguration() {
+  const detector = new YinPitchDetector()
+  const segmentationConfig: CandidateSegmentationOptions = Object.freeze({
+    ...DEFAULT_CANDIDATE_SEGMENTATION_OPTIONS,
+    confidenceThreshold: detector.config.confidenceThreshold,
+    analysisHopSeconds: detector.config.hopDurationSeconds,
+    analysisFrameSeconds: detector.config.frameDurationSeconds,
+  })
+  return { detector, segmentationConfig }
+}
+
+function decodeFailureDebugDraft(
+  result: Pick<RecordedSourceResult, 'durationSeconds' | 'settings' | 'partialReason'>,
+  decoderDetail: string,
+): AnalysisDebugDraft {
+  const { detector, segmentationConfig } = createMonophonicAnalysisConfiguration()
+  return {
+    analysis: {
+      detectorVersion: detector.version,
+      durationSeconds: Math.max(0, Math.min(60, result.durationSeconds)),
+      contour: [],
+      candidateNotes: [],
+    },
+    detectorConfig: detector.config,
+    segmentationConfig,
+    decodedDurationSeconds: null,
+    decodedSampleRateHz: null,
+    decodedChannelCount: null,
+    recorderDurationSeconds: result.durationSeconds,
+    captureSettings: result.settings,
+    partialReason: result.partialReason,
+    failureDescription: `Recording decode failed before pitch analysis: ${decoderDetail}`.slice(
+      0,
+      300,
+    ),
+  }
+}
+
 async function analyzeMonophonicSourceFile(
   file: File,
   existing: AppProject | null,
@@ -459,7 +510,12 @@ async function analyzeMonophonicSourceFile(
 
   const context = new AudioContext()
   try {
-    const buffer = await context.decodeAudioData(await file.arrayBuffer())
+    let buffer: AudioBuffer
+    try {
+      buffer = await context.decodeAudioData(await file.arrayBuffer())
+    } catch (error) {
+      throw new SourceAudioDecodeError(error)
+    }
     const admission = decideMonophonicAnalysisStrategy({
       encodedByteLength: file.size,
       durationSeconds: buffer.duration,
@@ -471,13 +527,7 @@ async function analyzeMonophonicSourceFile(
         'Decoded audio exceeds the whole-file memory budget; use a shorter monophonic source.',
       )
     }
-    const detector = new YinPitchDetector()
-    const segmentationConfig: CandidateSegmentationOptions = Object.freeze({
-      ...DEFAULT_CANDIDATE_SEGMENTATION_OPTIONS,
-      confidenceThreshold: detector.config.confidenceThreshold,
-      analysisHopSeconds: detector.config.hopDurationSeconds,
-      analysisFrameSeconds: detector.config.frameDurationSeconds,
-    })
+    const { detector, segmentationConfig } = createMonophonicAnalysisConfiguration()
     const analysis = await analyzeMonophonicAudioBuffer(buffer, {
       admission,
       detector,
@@ -645,6 +695,7 @@ function SetupRoute() {
   const recordedCaptureGenerationRef = useRef(0)
   const [analysisSourceUrl, setAnalysisSourceUrl] = useState<string | null>(null)
   const [analysisDebug, setAnalysisDebug] = useState<AnalysisDebugView>(INITIAL_ANALYSIS_DEBUG)
+  const analysisDebugSourceRef = useRef<File | null>(null)
   const preparedAnalysisDebugRef = useRef<PreparedAnalysisDebug | null>(null)
   const analysisDebugPreparerRef = useRef<ExportPreparer | null>(null)
   const analysisDebugUploadAbortRef = useRef<AbortController | null>(null)
@@ -695,6 +746,7 @@ function SetupRoute() {
 
   const invalidateAnalysisDebug = useCallback(() => {
     releasePreparedAnalysisDebug()
+    analysisDebugSourceRef.current = null
     setAnalysisDebug((current) => ({
       ...INITIAL_ANALYSIS_DEBUG,
       expectedNoteCount: current.expectedNoteCount,
@@ -712,6 +764,7 @@ function SetupRoute() {
     ) => {
       const analyzed = await analyzeMonophonicSourceFile(file, stateRef.current.existing)
       invalidateAnalysisDebug()
+      analysisDebugSourceRef.current = file
       const useAsReference = useRecordedSourceAsReferenceRef.current
       const sourceDescription = origin === 'recording' ? 'from your recording' : 'in a new draft'
       const interruptionMessage = partialReason
@@ -734,11 +787,13 @@ function SetupRoute() {
           analysis: analyzed.analysis,
           detectorConfig: analyzed.detectorConfig,
           segmentationConfig: analyzed.segmentationConfig,
+          decodedDurationSeconds: analyzed.durationSeconds,
           decodedSampleRateHz: analyzed.decodedSampleRateHz,
           decodedChannelCount: analyzed.decodedChannelCount,
           recorderDurationSeconds: captureMetadata?.durationSeconds ?? null,
           captureSettings: captureMetadata?.settings ?? null,
           partialReason,
+          failureDescription: null,
         },
         targetStatus: `${analyzed.notes.length} estimated notes ${sourceDescription}. Review the piano note names, timing, and MIDI values before saving.${interruptionMessage}`,
         ...(useAsReference
@@ -850,7 +905,24 @@ function SetupRoute() {
           }))
         } catch (error) {
           if (generation !== recordedCaptureGenerationRef.current) return
-          const message = captureFailureMessage(error)
+          const decodeFailure = error instanceof SourceAudioDecodeError ? error : null
+          const message = decodeFailure
+            ? `${decodeFailure.message} You can report the failed recording below or record again.`
+            : captureFailureMessage(error)
+          const decodeFailureDraft = decodeFailure
+            ? decodeFailureDebugDraft(result, decodeFailure.decoderDetail)
+            : null
+          if (decodeFailureDraft) {
+            releasePreparedAnalysisDebug()
+            analysisDebugSourceRef.current = file
+            setAnalysisDebug((current) => ({
+              ...INITIAL_ANALYSIS_DEBUG,
+              context: 'decode-failure',
+              expectedNoteCount: current.expectedNoteCount,
+              issueDescription: decodeFailureDraft.failureDescription ?? '',
+              routeCategory: current.routeCategory,
+            }))
+          }
           setRecordedMelody((value) => ({
             ...value,
             phase: 'error',
@@ -860,6 +932,7 @@ function SetupRoute() {
             ...value,
             busy: false,
             error: message,
+            ...(decodeFailureDraft ? { analysisDebugDraft: decodeFailureDraft } : {}),
             targetStatus: 'Analysis stopped without changing the current target notes.',
           }))
         }
@@ -911,6 +984,7 @@ function SetupRoute() {
     applyAnalyzedSource,
     invalidateAnalysisDebug,
     recordedMelody.hasRecordedSource,
+    releasePreparedAnalysisDebug,
     releaseRecordedCapture,
   ])
 
@@ -1035,7 +1109,7 @@ function SetupRoute() {
 
     const current = stateRef.current
     const draft = current.analysisDebugDraft
-    const source = current.targetSourceFile
+    const source = analysisDebugSourceRef.current ?? current.targetSourceFile
     if (!draft || !source) {
       setAnalysisDebug((value) => ({
         ...value,
@@ -1048,7 +1122,9 @@ function SetupRoute() {
       }))
       return
     }
-    const extension = debugAudioExtensionForMimeType(current.targetSourceMimeType ?? source.type)
+    const sourceMediaType =
+      source.type.length > 0 ? source.type : (current.targetSourceMimeType ?? '')
+    const extension = debugAudioExtensionForMimeType(sourceMediaType)
     if (!extension) {
       setAnalysisDebug((value) => ({
         ...value,
@@ -1079,6 +1155,20 @@ function SetupRoute() {
     const appAssetFileName = document.querySelector<HTMLScriptElement>(
       'script[type="module"][src]',
     )?.src
+    const userDescription = analysisDebug.issueDescription.trim()
+    const failureUserNote = draft.failureDescription
+      ? userDescription.startsWith(draft.failureDescription)
+        ? userDescription.slice(draft.failureDescription.length).trim()
+        : userDescription
+      : ''
+    const reportDescription = draft.failureDescription
+      ? `${draft.failureDescription}${failureUserNote ? ` User note: ${failureUserNote}` : ''}`.slice(
+          0,
+          500,
+        )
+      : userDescription.length > 0
+        ? userDescription
+        : null
     const input: AnalysisDebugPackageInput = {
       audio: { blob: source, extension },
       analysis: draft.analysis,
@@ -1086,7 +1176,7 @@ function SetupRoute() {
       segmentationConfig: draft.segmentationConfig,
       captureMetadata: {
         recorderDurationSeconds: draft.recorderDurationSeconds,
-        decodedDurationSeconds: draft.analysis.durationSeconds,
+        decodedDurationSeconds: draft.decodedDurationSeconds,
         decodedSampleRateHz: draft.decodedSampleRateHz,
         decodedChannelCount: draft.decodedChannelCount,
         settings: draft.captureSettings,
@@ -1103,7 +1193,7 @@ function SetupRoute() {
       },
       userReport: {
         expectedNoteCount: analysisDebug.expectedNoteCount,
-        description: analysisDebug.issueDescription.trim() || null,
+        description: reportDescription,
       },
     }
 

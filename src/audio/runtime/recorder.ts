@@ -32,6 +32,12 @@ interface ForegroundRecorderDependencies {
     ((stream: MediaStream, options?: MediaRecorderOptions) => MediaRecorder) | undefined
   readonly captureSettings?: RecordingSnapshot['settings'] | undefined
   readonly mediaDevices?: MediaDevices | undefined
+  /**
+   * Omit for one-second crash-recovery chunks. Pass null when the caller needs
+   * one finalized, self-contained recording blob (for example Safari source
+   * audio that will immediately be decoded by Web Audio).
+   */
+  readonly timesliceMs?: number | null | undefined
 }
 
 type RecordingListener = (snapshot: RecordingSnapshot) => void
@@ -50,6 +56,7 @@ export class ForegroundRecorder {
   private readonly recorder: MediaRecorder
   private readonly sink: RecorderChunkSink
   private readonly stream: MediaStream
+  private readonly timesliceMs: number | null
   private readonly windowValue: Window | undefined
   private readonly listeners = new Set<RecordingListener>()
   private readonly cleanupCallbacks: (() => void)[] = []
@@ -63,12 +70,14 @@ export class ForegroundRecorder {
   private finalizePromise: Promise<void> | null = null
   private sequence = 0
   private snapshot: RecordingSnapshot
+  private durationMonitor: ReturnType<typeof setInterval> | null = null
 
   constructor(dependencies: ForegroundRecorderDependencies) {
     this.stream = dependencies.stream
     this.clock = dependencies.clock
     this.sink = dependencies.sink
     this.limits = dependencies.limits
+    this.timesliceMs = dependencies.timesliceMs === undefined ? 1000 : dependencies.timesliceMs
     this.mediaDevices =
       dependencies.mediaDevices ??
       (typeof navigator === 'undefined' ? undefined : navigator.mediaDevices)
@@ -118,8 +127,10 @@ export class ForegroundRecorder {
     this.completedBufferingPauseSeconds = 0
     this.bufferingResumeRequested = false
     try {
-      this.recorder.start(1000)
+      if (this.timesliceMs === null) this.recorder.start()
+      else this.recorder.start(this.timesliceMs)
       this.patch({ phase: 'recording', error: null })
+      if (this.timesliceMs === null) this.startDurationMonitor()
     } catch (error) {
       void this.fail(error)
       throw error
@@ -167,6 +178,7 @@ export class ForegroundRecorder {
   }
 
   dispose(): void {
+    this.stopDurationMonitor()
     for (const cleanup of this.cleanupCallbacks.splice(0)) cleanup()
     this.listeners.clear()
   }
@@ -183,8 +195,10 @@ export class ForegroundRecorder {
       }
       this.pendingWrites = this.pendingWrites.then(() => this.sink.append(event.data, sequence))
       this.emit()
-      if (this.snapshot.byteLength >= this.limits.maxBytes) void this.interrupt('size-limit')
-      if (this.duration() >= this.limits.maxDurationSeconds) void this.interrupt('duration-limit')
+      if (this.snapshot.phase === 'recording') {
+        if (this.snapshot.byteLength >= this.limits.maxBytes) void this.interrupt('size-limit')
+        if (this.duration() >= this.limits.maxDurationSeconds) void this.interrupt('duration-limit')
+      }
     })
 
     this.recorder.addEventListener('error', (event) => {
@@ -255,6 +269,7 @@ export class ForegroundRecorder {
     }
 
     this.stopContextTime = this.clock.currentTime
+    this.stopDurationMonitor()
     this.patch({ phase: 'finalizing', partialReason: reason, durationSeconds: this.duration() })
     this.finalizePromise = new Promise<void>((resolve) => {
       this.recorder.addEventListener(
@@ -315,6 +330,24 @@ export class ForegroundRecorder {
     }
     this.bufferingPauseContextTime = null
     this.bufferingResumeRequested = false
+  }
+
+  private startDurationMonitor(): void {
+    this.stopDurationMonitor()
+    this.durationMonitor = setInterval(() => {
+      if (this.snapshot.phase !== 'recording') return
+      const durationSeconds = this.duration()
+      this.patch({ durationSeconds })
+      if (durationSeconds >= this.limits.maxDurationSeconds) {
+        void this.interrupt('duration-limit')
+      }
+    }, 250)
+  }
+
+  private stopDurationMonitor(): void {
+    if (this.durationMonitor === null) return
+    clearInterval(this.durationMonitor)
+    this.durationMonitor = null
   }
 
   private currentRecorderState(): RecordingState {
