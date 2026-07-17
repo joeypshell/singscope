@@ -48,7 +48,9 @@ Use wired or USB-C headphones for the most predictable playback/capture route. A
 ## Reference targets
 
 - Standard MIDI format 0/1 with PPQN timing: supported and authoritative after track selection.
-- Touch/manual note editing: supported and authoritative after edits.
+- Touch/manual note editing: supported through a one-tap-per-note piano keyboard, piano roll,
+  and exact note fields. Manual edits are authoritative after save and do not use the
+  microphone or pitch detector.
 - Uploaded isolated monophonic vocal/instrument analysis: assisted estimate; always editable.
 - Local **Record melody** capture: sing, hum, whistle, or play one note at a time on a single-note instrument. Analysis stays on the device and produces editable piano-note names and timings.
 - Chord, polyphonic, and mixed mastered-song transcription or vocal isolation: not implemented. A backing track is not claimed to contain an extracted melody.

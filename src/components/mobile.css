@@ -91,6 +91,108 @@
   touch-action: pan-y;
 }
 
+.ss-melody-keyboard {
+  margin-block: 1rem;
+  padding: 1rem;
+  border: 1px solid #bbb3aa;
+  border-radius: 0.9rem;
+  background: #f8f4ee;
+}
+
+.ss-melody-keyboard h4,
+.ss-melody-keyboard p {
+  margin-block-start: 0;
+}
+
+.ss-keyboard-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.ss-octave-control {
+  display: grid;
+  grid-template-columns: 44px minmax(6rem, 1fr) 44px;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ss-octave-control .ss-button {
+  padding-inline: 0;
+}
+
+.ss-octave-control output {
+  text-align: center;
+  font-weight: 750;
+}
+
+.ss-keyboard-scroll {
+  overflow-x: auto;
+  padding-block-end: 0.25rem;
+  overscroll-behavior-inline: contain;
+}
+
+.ss-keyboard-keys {
+  position: relative;
+  display: flex;
+  min-inline-size: 21.875rem;
+  block-size: 10rem;
+}
+
+.ss-piano-key {
+  min-block-size: 44px;
+  border: 1px solid #393439;
+  border-radius: 0 0 0.45rem 0.45rem;
+  font: inherit;
+  font-weight: 760;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.ss-piano-key--white {
+  display: flex;
+  flex: 1 1 0;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0.55rem 0.15rem;
+  background: #fff;
+  color: #171719;
+}
+
+.ss-piano-key--black {
+  position: absolute;
+  z-index: 1;
+  inline-size: 44px;
+  block-size: 6.5rem;
+  padding: 0.4rem 0.1rem;
+  transform: translateX(-50%);
+  background: #242126;
+  color: #fff;
+}
+
+.ss-piano-key:active {
+  background: #f1a832;
+  color: #171719;
+}
+
+.ss-piano-key:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.ss-keyboard-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.ss-keyboard-summary output {
+  font-weight: 750;
+}
+
 .ss-card {
   padding: 1rem;
 }
@@ -150,6 +252,7 @@
 
 .ss-button:focus-visible,
 .ss-segmented button:focus-visible,
+.ss-piano-key:focus-visible,
 .ss-field input:focus-visible,
 .ss-field select:focus-visible,
 .ss-range:focus-visible,

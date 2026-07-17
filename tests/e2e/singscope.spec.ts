@@ -183,6 +183,152 @@ test('backing audio and MIDI track selection create a rendered target', async ({
   expect(noteCount).toBe(1)
 })
 
+test('manual piano entry preserves every tap, timing, transpose, undo, and reload', async ({
+  page,
+}) => {
+  await openApp(page)
+  await page.getByRole('button', { name: 'New project' }).click()
+  await expect(page.getByRole('heading', { name: 'Reference and target' })).toBeVisible()
+
+  // Step entry is deliberately scoped to Manual; MIDI and Audio / record retain their own inputs.
+  await expect(page.getByRole('heading', { name: 'Enter melody with piano' })).toHaveCount(0)
+
+  await page.getByLabel('Project title').fill('Seven tapped notes')
+  await page
+    .getByLabel(/Backing audio/)
+    .setInputFiles(join(process.cwd(), 'public', 'demo-reference.wav'))
+  await expect(page.getByText('Reference: demo-reference.wav')).toBeVisible({ timeout: 10_000 })
+
+  const sources = page.getByRole('group', { name: 'Target source' })
+  await sources.getByRole('button', { name: 'Manual' }).click()
+  const keyboard = page.getByRole('region', { name: 'Enter melody with piano' })
+  await expect(keyboard).toBeVisible()
+
+  await page.getByLabel('Transpose (semitones)').fill('2')
+  await keyboard.getByLabel('Note length').selectOption('0.5')
+  await keyboard.getByLabel('Gap before each new note').selectOption('0.1')
+
+  const keys = keyboard.getByRole('group', { name: 'Piano keys, octave 4' })
+  await keys.getByRole('button', { name: 'Add A4' }).click({ clickCount: 2, delay: 20 })
+  for (const noteName of ['G4', 'E4', 'F4', 'G4', 'A4']) {
+    await keys.getByRole('button', { name: `Add ${noteName}` }).click()
+  }
+
+  await expect(keyboard.getByText('7 notes entered.')).toBeVisible()
+  await expect(page.getByLabel('Piano note sequence')).toContainText(
+    'A4 · A4 · G4 · E4 · F4 · G4 · A4',
+  )
+
+  // Keys name the effective pitch; storage keeps the source pitch before the +2 transpose.
+  const midiNotes = page.getByLabel('MIDI note')
+  await expect(midiNotes).toHaveCount(7)
+  await expect(midiNotes.nth(0)).toHaveValue('67')
+  await expect(midiNotes.nth(1)).toHaveValue('67')
+  await expect(midiNotes.nth(2)).toHaveValue('65')
+  await expect(midiNotes.nth(3)).toHaveValue('62')
+  await expect(midiNotes.nth(4)).toHaveValue('63')
+  await expect(midiNotes.nth(5)).toHaveValue('65')
+  await expect(midiNotes.nth(6)).toHaveValue('67')
+
+  const starts = page.getByLabel('Start')
+  const ends = page.getByLabel('End')
+  for (const [index, value] of [
+    '0:00.0',
+    '0:00.6',
+    '0:01.2',
+    '0:01.8',
+    '0:02.4',
+    '0:03.0',
+    '0:03.6',
+  ].entries()) {
+    await expect(starts.nth(index)).toHaveValue(value)
+  }
+  for (const [index, value] of [
+    '0:00.5',
+    '0:01.1',
+    '0:01.7',
+    '0:02.3',
+    '0:02.9',
+    '0:03.5',
+    '0:04.1',
+  ].entries()) {
+    await expect(ends.nth(index)).toHaveValue(value)
+  }
+
+  await keyboard.getByRole('button', { name: 'Undo last note' }).click()
+  await expect(keyboard.getByText('6 notes entered.')).toBeVisible()
+  await expect(midiNotes).toHaveCount(6)
+  await expect(page.getByLabel('Piano note sequence')).toContainText('A4 · A4 · G4 · E4 · F4 · G4')
+  await keys.getByRole('button', { name: 'Add A4' }).click()
+  await expect(keyboard.getByText('7 notes entered.')).toBeVisible()
+
+  const dismiss = page.getByRole('button', { name: 'Dismiss' })
+  if (await dismiss.isVisible()) await dismiss.click()
+  await page.getByRole('button', { name: 'Save project' }).click()
+  await expect(page).toHaveURL(/#\/practice\//, { timeout: 10_000 })
+  await expect(page.getByRole('heading', { name: 'Seven tapped notes' })).toBeVisible()
+
+  await page.reload()
+  await expect(page.getByRole('heading', { name: 'Seven tapped notes' })).toBeVisible()
+  const persisted = await page.evaluate(async () => {
+    const request = indexedDB.open('singscope:app:v1')
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error ?? new Error('IndexedDB could not be opened.'))
+    })
+    try {
+      const transaction = database.transaction('projects', 'readonly')
+      const recordsRequest = transaction.objectStore('projects').getAll()
+      const records = await new Promise<Record<string, unknown>[]>((resolve, reject) => {
+        recordsRequest.onsuccess = () => resolve(recordsRequest.result as Record<string, unknown>[])
+        recordsRequest.onerror = () =>
+          reject(recordsRequest.error ?? new Error('Projects could not be read.'))
+      })
+      const payload = records
+        .map((record) => record['payload'])
+        .find(
+          (
+            candidate,
+          ): candidate is {
+            title: string
+            targetMode: string
+            transpositionSemitones: number
+            notes: { midiNote: number; startSeconds: number; endSeconds: number }[]
+          } =>
+            typeof candidate === 'object' &&
+            candidate !== null &&
+            (candidate as { title?: unknown }).title === 'Seven tapped notes',
+        )
+      return payload
+        ? {
+            targetMode: payload.targetMode,
+            transpose: payload.transpositionSemitones,
+            notes: payload.notes.map(({ midiNote, startSeconds, endSeconds }) => ({
+              midiNote,
+              startSeconds,
+              endSeconds,
+            })),
+          }
+        : null
+    } finally {
+      database.close()
+    }
+  })
+  expect(persisted).toEqual({
+    targetMode: 'manual',
+    transpose: 2,
+    notes: [
+      { midiNote: 67, startSeconds: 0, endSeconds: 0.5 },
+      { midiNote: 67, startSeconds: 0.6, endSeconds: 1.1 },
+      { midiNote: 65, startSeconds: 1.2, endSeconds: 1.7 },
+      { midiNote: 62, startSeconds: 1.8, endSeconds: 2.3 },
+      { midiNote: 63, startSeconds: 2.4, endSeconds: 2.9 },
+      { midiNote: 65, startSeconds: 3, endSeconds: 3.5 },
+      { midiNote: 67, startSeconds: 3.6, endSeconds: 4.1 },
+    ],
+  })
+})
+
 test('recorded melody becomes editable piano notes and a playable local reference', async ({
   page,
 }) => {
