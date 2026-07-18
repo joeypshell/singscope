@@ -264,6 +264,31 @@ export async function installDeterministicBrowserAdapters(page: Page): Promise<v
             } as unknown as GainNode
           }
 
+          createBuffer(numberOfChannels: number, length: number, sampleRate: number): AudioBuffer {
+            const channels = Array.from(
+              { length: numberOfChannels },
+              () => new Float32Array(length),
+            )
+            return {
+              duration: length / sampleRate,
+              length,
+              numberOfChannels,
+              sampleRate,
+              getChannelData: (channel: number) => channels[channel] ?? new Float32Array(),
+            } as unknown as AudioBuffer
+          }
+
+          createBufferSource(): AudioBufferSourceNode {
+            return {
+              buffer: null,
+              connect: <T>(destination: T) => destination,
+              disconnect: () => undefined,
+              onended: null,
+              start: () => undefined,
+              stop: () => undefined,
+            } as unknown as AudioBufferSourceNode
+          }
+
           createMediaStreamDestination(): MediaStreamAudioDestinationNode {
             const stream = {
               getAudioTracks: () => [],

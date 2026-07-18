@@ -1,3 +1,4 @@
+import { beginBrowserAudioCapture, type AudioCaptureSession } from './audio-session'
 import { requestMicrophone, stopMediaStream, type MicrophoneRequest } from './microphone'
 import { ForegroundRecorder, selectRecorderMimeType } from './recorder'
 import type { CaptureSettings, RecordingInterruption, RecordingSnapshot } from './types'
@@ -45,6 +46,7 @@ export interface RecordedSourceCaptureDependencies {
   readonly document?: Document | undefined
   readonly window?: Window | undefined
   readonly mediaDevices?: MediaDevices | undefined
+  readonly beginAudioCapture?: (() => AudioCaptureSession) | undefined
 }
 
 type RecordedSourceListener = (snapshot: RecordedSourceSnapshot) => void
@@ -91,6 +93,7 @@ export class RecordedSourceCapture {
   private recorder: ForegroundRecorder | null = null
   private startPromise: Promise<void> | null = null
   private cleanupPromise: Promise<void> | null = null
+  private audioCaptureSession: AudioCaptureSession | null = null
   private expectedSequence = 0
   private capturedBytes = 0
   private discarded = false
@@ -164,6 +167,7 @@ export class RecordedSourceCapture {
       throw new DOMException('The recorded source cannot be started again.', 'InvalidStateError')
     }
     this.patch({ phase: 'requesting', error: null })
+    this.audioCaptureSession = (this.dependencies.beginAudioCapture ?? beginBrowserAudioCapture)()
 
     const createAudioContext =
       this.dependencies.createAudioContext ??
@@ -187,6 +191,7 @@ export class RecordedSourceCapture {
 
       if (microphoneResult.status === 'fulfilled') {
         this.stream = microphoneResult.value.stream
+        this.audioCaptureSession.reassert()
         this.patch({ settings: microphoneResult.value.settings })
       }
       if (resumeResult.status === 'rejected') throw resumeResult.reason
@@ -323,6 +328,8 @@ export class RecordedSourceCapture {
 
       const context = this.context
       this.context = null
+      this.audioCaptureSession?.release()
+      this.audioCaptureSession = null
       if (context && context.state !== 'closed') await context.close().catch(() => undefined)
     })()
     return this.cleanupPromise

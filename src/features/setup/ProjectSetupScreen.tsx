@@ -6,6 +6,7 @@ import type { PitchChartScene } from '../../rendering/pitch-chart'
 import { RecordedMelodyControl, type RecordedMelodyView } from './RecordedMelodyControl'
 import { AnalysisDebugPanel } from './AnalysisDebugPanel'
 import type { AnalysisDebugRouteCategory, AnalysisDebugView } from '../../app/types'
+import { prepareBrowserAudioPlayback } from '../../audio/runtime'
 
 export type { RecordedMelodyPhase, RecordedMelodyView } from './RecordedMelodyControl'
 
@@ -284,6 +285,7 @@ export function ProjectSetupScreen({
                   controls
                   preload="metadata"
                   src={model.analysisSourceUrl}
+                  onPlay={() => prepareBrowserAudioPlayback()}
                 />
               ) : null}
               <PitchChartCanvas

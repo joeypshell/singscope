@@ -1800,7 +1800,12 @@ function PracticeRoute() {
   const controller = usePracticeController(project ?? createDemoProject(), onTakeSaved)
   useEffect(() => {
     const plan = repeatPlan.current
-    if (!pendingRepeat || plan === null || controller.phase !== 'ready') return
+    if (
+      !pendingRepeat ||
+      plan === null ||
+      (controller.phase !== 'ready' && controller.phase !== 'paused')
+    )
+      return
     setPendingRepeat(false)
     controller.start(plan.startSeconds, plan.endSeconds, plan.guideToneEnabled)
   }, [controller, pendingRepeat])

@@ -131,6 +131,21 @@ describe('RecordedSourceCapture', () => {
     expect(capture.getSnapshot().phase).toBe('complete')
   })
 
+  it('reasserts the iPhone capture route after permission and restores playback on cleanup', async () => {
+    const reassert = vi.fn()
+    const release = vi.fn()
+    const { capture, context, recorder } = fixture({
+      beginAudioCapture: () => ({ reassert, release }),
+    })
+    await capture.start()
+    expect(reassert).toHaveBeenCalledOnce()
+
+    context.currentTime = 10.5
+    recorder.finalChunk = new Blob(['encoded-audio'], { type: 'audio/mp4' })
+    await capture.stop()
+    expect(release).toHaveBeenCalledOnce()
+  })
+
   it('finalizes foreground loss as a partial result without auto-resuming', async () => {
     const { capture, context, recorder, track, visibility } = fixture()
     await capture.start()

@@ -19,6 +19,23 @@ export interface ReferencePlayerSnapshot {
   readonly message: string | null
 }
 
+/** Shared transport contract for decoded media and locally synthesized references. */
+export interface ReferencePlayback {
+  subscribe(listener: (snapshot: ReferencePlayerSnapshot) => void): () => void
+  getSnapshot(): ReferencePlayerSnapshot
+  getAvailablePlaybackRates(): readonly PlaybackRate[]
+  probeSlowPlaybackRates(): Promise<readonly PlaybackRate[]>
+  activateFromGesture(options: StartPlaybackOptions): Promise<void>
+  beginAudible(projectTimeSeconds: number): boolean
+  updateCountdown(): number
+  setPlaybackRate(rate: PlaybackRate): void
+  seek(projectTimeSeconds: number): void
+  reanchorIfDrifted(toleranceSeconds?: number): boolean
+  currentProjectTime(contextTimeSeconds?: number): number | null
+  pause(): void
+  dispose(): Promise<void>
+}
+
 export interface StartPlaybackOptions {
   readonly loopStartSeconds: number
   readonly loopEndSeconds: number

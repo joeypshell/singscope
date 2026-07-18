@@ -8,7 +8,7 @@ const WAV_HEADER_BYTES = 44
 const PCM_BYTES_PER_SAMPLE = 2
 const ATTACK_SECONDS = 0.015
 const RELEASE_SECONDS = 0.06
-const PEAK_AMPLITUDE = 0.2
+const PEAK_AMPLITUDE = 0.4
 const SINE_TABLE_SIZE = 2_048
 const SINE_TABLE = Float32Array.from({ length: SINE_TABLE_SIZE }, (_, index) =>
   Math.sin((2 * Math.PI * index) / SINE_TABLE_SIZE),
