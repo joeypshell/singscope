@@ -333,6 +333,13 @@ export async function installDeterministicBrowserAdapters(page: Page): Promise<v
 
       const AudioContextConstructor = window.AudioContext
       try {
+        Object.defineProperty(AudioContextConstructor.prototype, 'createMediaStreamSource', {
+          configurable: true,
+          value: () => ({
+            connect: <T>(destination: T) => destination,
+            disconnect: () => undefined,
+          }),
+        })
         Object.defineProperty(AudioContextConstructor.prototype, 'decodeAudioData', {
           configurable: true,
           value: () => {
