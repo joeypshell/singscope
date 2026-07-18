@@ -1,5 +1,6 @@
 export * from './analyze'
 export * from './contracts'
+export * from './melody-reference'
 export * from './monophonic'
 export * from './resample'
 export * from './smoothing'

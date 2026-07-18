@@ -82,6 +82,43 @@ describe('project setup', () => {
     ).toBeInTheDocument()
   })
 
+  it('explains that manual notes become the practice reference without an upload', () => {
+    render(
+      <ProjectSetupScreen
+        model={{
+          title: 'Typed melody',
+          referenceName: null,
+          targetMode: 'manual',
+          targetStatus: 'Piano-entered notes are authoritative after save.',
+          notes: [{ id: 'note-1', startSeconds: 0, endSeconds: 1, midiNote: 69 }],
+          transpositionSemitones: 0,
+          alignmentSeconds: 0,
+          validationMessage: null,
+          canSave: true,
+        }}
+        onBack={vi.fn()}
+        onTitleChange={vi.fn()}
+        onReferenceFile={vi.fn()}
+        onTargetModeChange={vi.fn()}
+        onMidiFile={vi.fn()}
+        onIsolatedVocalFile={vi.fn()}
+        onTranspositionChange={vi.fn()}
+        onAlignmentChange={vi.fn()}
+        onNoteChange={vi.fn()}
+        onAddNote={vi.fn()}
+        onAddKeyboardNote={vi.fn()}
+        onRemoveNote={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/Backing audio \(optional for Manual\)/)).toBeInTheDocument()
+    expect(screen.getByText(/Practice reference:/).parentElement).toHaveTextContent(
+      'Entered melody · synthesized locally',
+    )
+    expect(screen.getByText(/No upload is needed/)).toBeInTheDocument()
+  })
+
   it('offers local recorded-melody acquisition inside the analyzed-audio target mode', async () => {
     const onStart = vi.fn()
     const onUseAsReference = vi.fn()

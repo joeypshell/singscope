@@ -25,7 +25,7 @@ import {
 } from '../export'
 import type { ExportView } from '../features/review/ExportPanel'
 import { calculateCanvasResolution, renderPitchChart } from '../rendering'
-import { getBinaryStore } from './files'
+import { getBinaryStore, referenceAudioBlob } from './files'
 import type { AppProject, AppTake } from './types'
 
 type ExportPhase = ExportView['phase']
@@ -384,21 +384,13 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
 
       let reference: ReferenceAudioExport | undefined
       if (exportState.includeReference) {
-        let referenceBlob: Blob | null = null
-        if (project.isSyntheticDemo) {
-          referenceBlob = await (
-            await fetch(
-              new URL(`${import.meta.env.BASE_URL}demo-reference.wav`, window.location.origin),
-            )
-          ).blob()
-        } else if (project.referenceAssetId) {
-          referenceBlob = await (await getBinaryStore()).read(project.referenceAssetId)
-        }
+        const referenceBlob = await referenceAudioBlob(project)
         if (referenceBlob)
           reference = {
             blob: referenceBlob,
             extension: referenceExtension(project.referenceMimeType),
           }
+        else omissions.push('Reference audio was requested but is unavailable on this device.')
       }
 
       const reportInput: StaticReportInput = {

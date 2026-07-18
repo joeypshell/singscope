@@ -1,5 +1,6 @@
 export * from './capture-pipeline'
 export * from './melody-preview'
+export * from './melody-reference-renderer'
 export * from './microphone'
 export * from './recorded-source'
 export * from './recorder'

@@ -183,7 +183,7 @@ test('backing audio and MIDI track selection create a rendered target', async ({
   expect(noteCount).toBe(1)
 })
 
-test('manual piano entry preserves every tap, timing, transpose, undo, and reload', async ({
+test('manual piano entry saves without an upload and becomes the practice reference', async ({
   page,
 }) => {
   await openApp(page)
@@ -194,13 +194,14 @@ test('manual piano entry preserves every tap, timing, transpose, undo, and reloa
   await expect(page.getByRole('heading', { name: 'Enter melody with piano' })).toHaveCount(0)
 
   await page.getByLabel('Project title').fill('Seven tapped notes')
-  await page
-    .getByLabel(/Backing audio/)
-    .setInputFiles(join(process.cwd(), 'public', 'demo-reference.wav'))
-  await expect(page.getByText('Reference: demo-reference.wav')).toBeVisible({ timeout: 10_000 })
 
   const sources = page.getByRole('group', { name: 'Target source' })
   await sources.getByRole('button', { name: 'Manual' }).click()
+  await expect(page.getByText('Backing audio (optional for Manual)')).toBeVisible()
+  await expect(
+    page.getByText('Practice reference: Entered melody · synthesized locally'),
+  ).toBeVisible()
+  await expect(page.getByText(/No upload is needed/)).toBeVisible()
   const keyboard = page.getByRole('region', { name: 'Enter melody with piano' })
   await expect(keyboard).toBeVisible()
 
@@ -272,12 +273,18 @@ test('manual piano entry preserves every tap, timing, transpose, undo, and reloa
 
   const dismiss = page.getByRole('button', { name: 'Dismiss' })
   if (await dismiss.isVisible()) await dismiss.click()
+  await expect(page.getByText(/Choose a valid backing audio file/)).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Save project' })).toBeEnabled()
   await page.getByRole('button', { name: 'Save project' }).click()
   await expect(page).toHaveURL(/#\/practice\//, { timeout: 10_000 })
   await expect(page.getByRole('heading', { name: 'Seven tapped notes' })).toBeVisible()
+  await expect(page.getByText('This project has no backing audio.')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled({ timeout: 10_000 })
 
   await page.reload()
   await expect(page.getByRole('heading', { name: 'Seven tapped notes' })).toBeVisible()
+  await expect(page.getByText('This project has no backing audio.')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled({ timeout: 10_000 })
   const persisted = await page.evaluate(async () => {
     const request = indexedDB.open('singscope:app:v1')
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -301,6 +308,10 @@ test('manual piano entry preserves every tap, timing, transpose, undo, and reloa
             title: string
             targetMode: string
             transpositionSemitones: number
+            referenceName: string | null
+            referenceAssetId: string | null
+            referenceMimeType: string | null
+            referenceDurationSeconds: number
             notes: { midiNote: number; startSeconds: number; endSeconds: number }[]
           } =>
             typeof candidate === 'object' &&
@@ -311,6 +322,10 @@ test('manual piano entry preserves every tap, timing, transpose, undo, and reloa
         ? {
             targetMode: payload.targetMode,
             transpose: payload.transpositionSemitones,
+            referenceName: payload.referenceName,
+            referenceAssetId: payload.referenceAssetId,
+            referenceMimeType: payload.referenceMimeType,
+            referenceDurationSeconds: payload.referenceDurationSeconds,
             notes: payload.notes.map(({ midiNote, startSeconds, endSeconds }) => ({
               midiNote,
               startSeconds,
@@ -325,6 +340,10 @@ test('manual piano entry preserves every tap, timing, transpose, undo, and reloa
   expect(persisted).toEqual({
     targetMode: 'manual',
     transpose: 2,
+    referenceName: 'Entered melody · synthesized locally',
+    referenceAssetId: null,
+    referenceMimeType: 'audio/wav',
+    referenceDurationSeconds: 4.1,
     notes: [
       { midiNote: 67, startSeconds: 0, endSeconds: 0.5 },
       { midiNote: 67, startSeconds: 0.6, endSeconds: 1.1 },
@@ -335,6 +354,16 @@ test('manual piano entry preserves every tap, timing, transpose, undo, and reloa
       { midiNote: 67, startSeconds: 3.6, endSeconds: 4.1 },
     ],
   })
+
+  await page.getByRole('button', { name: 'Start' }).click()
+  await expect(
+    page.getByRole('region', { name: 'Practice transport' }).getByText('● Recording'),
+  ).toBeVisible({ timeout: 8_000 })
+  await page
+    .getByRole('region', { name: 'Practice transport' })
+    .getByRole('button', { name: 'Stop' })
+    .evaluate((button: HTMLButtonElement) => button.click())
+  await expect(page).toHaveURL(/#\/review\//, { timeout: 10_000 })
 })
 
 test('recorded melody becomes editable piano notes and a playable local reference', async ({

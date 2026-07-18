@@ -6,6 +6,9 @@ import {
   createAnalyzedTargetDraftInput,
   decideMonophonicAnalysisStrategy,
   DEFAULT_CANDIDATE_SEGMENTATION_OPTIONS,
+  isMelodyReferencePitchSupported,
+  melodyReferenceDurationSeconds,
+  MELODY_REFERENCE_MAX_DURATION_SECONDS,
   YinPitchDetector,
   type CandidateSegmentationOptions,
   type MonophonicAnalysisResult,
@@ -633,8 +636,6 @@ function recordedViewPhase(snapshot: RecordedSourceSnapshot): RecordedMelodyStat
 
 function setupValidation(state: SetupState): string | null {
   if (!state.title.trim()) return 'Enter a project title.'
-  if (!state.referenceName || state.referenceDurationSeconds <= 0)
-    return 'Choose a valid backing audio file, or use the melody audio as the reference.'
   if (
     state.targetMode === 'isolated-vocal' &&
     !state.targetSourceAssetId &&
@@ -643,6 +644,13 @@ function setupValidation(state: SetupState): string | null {
     return 'Upload or record a monophonic melody before saving this target.'
   }
   if (state.notes.length === 0) return 'Add or import at least one target note.'
+  const hasBackingAudio =
+    (state.referenceAssetId !== null || state.referenceFile !== null) &&
+    Boolean(state.referenceName) &&
+    state.referenceDurationSeconds > 0
+  if (state.targetMode !== 'manual' && !hasBackingAudio) {
+    return 'Choose a valid backing audio file, or use the melody audio as the reference.'
+  }
   if (
     state.notes.some(
       (note) => !Number.isInteger(note.midiNote) || note.midiNote < 0 || note.midiNote > 127,
@@ -659,6 +667,13 @@ function setupValidation(state: SetupState): string | null {
   )
     return 'Every target note needs a finite start and a later end.'
   if (
+    !Number.isInteger(state.transpositionSemitones) ||
+    state.transpositionSemitones < -48 ||
+    state.transpositionSemitones > 48
+  ) {
+    return 'Transpose must be a whole number from -48 to 48 semitones.'
+  }
+  if (
     state.notes.some(
       (note) =>
         note.midiNote + state.transpositionSemitones < 0 ||
@@ -666,6 +681,23 @@ function setupValidation(state: SetupState): string | null {
     )
   ) {
     return 'Transpose moves at least one target outside the supported MIDI piano range (0–127).'
+  }
+  if (!Number.isFinite(state.alignmentSeconds)) return 'Alignment must be a finite number.'
+  if (state.targetMode === 'manual' && !hasBackingAudio) {
+    const durationSeconds = melodyReferenceDurationSeconds(state.notes, state.alignmentSeconds)
+    if (durationSeconds <= 0) {
+      return 'Alignment places the entire entered melody before the project starts.'
+    }
+    if (durationSeconds > MELODY_REFERENCE_MAX_DURATION_SECONDS) {
+      return 'The entered melody exceeds the 20-minute manual-reference limit.'
+    }
+    if (
+      state.notes.some(
+        (note) => !isMelodyReferencePitchSupported(note.midiNote, state.transpositionSemitones),
+      )
+    ) {
+      return 'The synthesized practice guide supports notes from 80 to 1,200 Hz, matching live pitch detection.'
+    }
   }
   return null
 }
@@ -1601,6 +1633,19 @@ function SetupRoute() {
             const targetSourceAssetId =
               state.targetMode === 'isolated-vocal' ? state.targetSourceAssetId : null
             let referenceAssetId = state.referenceAssetId
+            const useSynthesizedManualReference =
+              state.targetMode === 'manual' &&
+              state.referenceAssetId === null &&
+              state.referenceFile === null
+            const referenceName = useSynthesizedManualReference
+              ? 'Entered melody · synthesized locally'
+              : state.referenceName
+            const referenceMimeType = useSynthesizedManualReference
+              ? 'audio/wav'
+              : state.referenceMimeType
+            const referenceDurationSeconds = useSynthesizedManualReference
+              ? melodyReferenceDurationSeconds(state.notes, state.alignmentSeconds)
+              : state.referenceDurationSeconds
 
             if (
               state.targetMode === 'isolated-vocal' &&
@@ -1644,10 +1689,10 @@ function SetupRoute() {
               title: state.title.trim(),
               createdAt: state.createdAt,
               updatedAt: now,
-              referenceName: state.referenceName,
+              referenceName,
               referenceAssetId,
-              referenceMimeType: state.referenceMimeType,
-              referenceDurationSeconds: state.referenceDurationSeconds,
+              referenceMimeType,
+              referenceDurationSeconds,
               isSyntheticDemo: false,
               targetMode: state.targetMode,
               targetStatus:

@@ -51,7 +51,9 @@ Use wired or USB-C headphones for the most predictable playback/capture route. A
 - Touch/manual note editing: supported through a one-tap-per-note piano keyboard, piano roll,
   and exact note fields. Manual edits are authoritative after save and do not use the
   microphone or pitch detector. Each keyboard tap previews its displayed pitch, and the entered
-  melody can be played back with its current note lengths and gaps before saving.
+  melody can be played back with its current note lengths and gaps before saving. Backing audio is
+  optional for Manual projects; without an upload, the entered notes are synthesized locally as the
+  practice reference within the same 80–1,200 Hz range used by live pitch detection.
 - Uploaded isolated monophonic vocal/instrument analysis: assisted estimate; always editable.
 - Local **Record melody** capture: sing, hum, whistle, or play one note at a time on a single-note instrument. Analysis stays on the device and produces editable piano-note names and timings.
 - Chord, polyphonic, and mixed mastered-song transcription or vocal isolation: not implemented. A backing track is not claimed to contain an extracted melody.

@@ -207,6 +207,7 @@ export async function installDeterministicBrowserAdapters(page: Page): Promise<v
         class DeterministicAudioContext extends EventTarget {
           readonly destination = {}
           readonly sampleRate = 48_000
+          readonly audioWorklet = { addModule: () => Promise.resolve() }
           state: AudioContextState = 'suspended'
           private runningStartedAt = 0
           private accumulatedSeconds = 0
@@ -239,12 +240,21 @@ export async function installDeterministicBrowserAdapters(page: Page): Promise<v
           createMediaElementSource(): MediaElementAudioSourceNode {
             return {
               connect: <T>(destination: T) => destination,
+              disconnect: () => undefined,
             } as MediaElementAudioSourceNode
+          }
+
+          createMediaStreamSource(): MediaStreamAudioSourceNode {
+            return {
+              connect: <T>(destination: T) => destination,
+              disconnect: () => undefined,
+            } as MediaStreamAudioSourceNode
           }
 
           createGain(): GainNode {
             return {
               connect: <T>(destination: T) => destination,
+              disconnect: () => undefined,
               gain: {
                 cancelScheduledValues: () => undefined,
                 linearRampToValueAtTime: () => undefined,
@@ -289,6 +299,35 @@ export async function installDeterministicBrowserAdapters(page: Page): Promise<v
         Object.defineProperty(window, 'AudioContext', {
           configurable: true,
           value: DeterministicAudioContext,
+        })
+      }
+
+      if (!Reflect.has(window, 'AudioWorkletNode')) {
+        class DeterministicMessagePort extends EventTarget {
+          start(): void {
+            // The deterministic pipeline does not emit PCM batches.
+          }
+
+          postMessage(): void {
+            // Buffer recycling is inert without deterministic PCM batches.
+          }
+        }
+
+        class DeterministicAudioWorkletNode extends EventTarget {
+          readonly port = new DeterministicMessagePort()
+
+          connect<T>(destination: T): T {
+            return destination
+          }
+
+          disconnect(): void {
+            // No native graph is allocated by the deterministic adapter.
+          }
+        }
+
+        Object.defineProperty(window, 'AudioWorkletNode', {
+          configurable: true,
+          value: DeterministicAudioWorkletNode,
         })
       }
 
