@@ -1,3 +1,5 @@
+import { prepareBrowserAudioPlayback } from './audio-session'
+
 const TAP_PREVIEW_SECONDS = 0.45
 const START_LEAD_SECONDS = 0.025
 const MIN_AUDIBLE_SECONDS = 0.08
@@ -66,6 +68,8 @@ export class MelodyPreviewPlayer {
       return Promise.reject(new RangeError('Preview pitch must be a MIDI note from 0 to 127.'))
     }
 
+    // Must run in the key's click handler so iPhone Silent mode does not mute Web Audio.
+    prepareBrowserAudioPlayback()
     this.stopSequence()
     this.stopNodes(this.tapNodes)
     const context = this.ensureContext()
@@ -80,6 +84,8 @@ export class MelodyPreviewPlayer {
   }
 
   play(notes: readonly MelodyPreviewNote[], onEnded: () => void): MelodyPreviewResult {
+    // Must run in the Play button handler before AudioContext.resume().
+    prepareBrowserAudioPlayback()
     this.stopAll()
     const validNotes = notes.filter(isValidPreviewNote).sort((left, right) => {
       if (left.startSeconds !== right.startSeconds) return left.startSeconds - right.startSeconds
@@ -178,7 +184,7 @@ export class MelodyPreviewPlayer {
     if (this.context) return this.context
     const context = this.createAudioContext()
     const masterGain = context.createGain()
-    masterGain.gain.value = 0.72
+    masterGain.gain.value = 0.85
     masterGain.connect(context.destination)
     this.context = context
     this.masterGain = masterGain
@@ -206,8 +212,8 @@ export class MelodyPreviewPlayer {
     oscillator.type = 'triangle'
     oscillator.frequency.value = frequencyForMidiNote(midiNote)
     gain.gain.setValueAtTime(0, startTime)
-    gain.gain.linearRampToValueAtTime(0.16, attackEnd)
-    gain.gain.linearRampToValueAtTime(0.065, releaseStart)
+    gain.gain.linearRampToValueAtTime(0.22, attackEnd)
+    gain.gain.linearRampToValueAtTime(0.09, releaseStart)
     gain.gain.linearRampToValueAtTime(0, endTime)
     oscillator.connect(gain).connect(this.masterGain ?? context.destination)
     const voice = { oscillator, gain }

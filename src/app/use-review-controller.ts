@@ -25,6 +25,7 @@ import {
 } from '../export'
 import type { ExportView } from '../features/review/ExportPanel'
 import { calculateCanvasResolution, renderPitchChart } from '../rendering'
+import { prepareBrowserAudioPlayback } from '../audio/runtime'
 import { getBinaryStore, referenceAudioBlob } from './files'
 import type { AppProject, AppTake } from './types'
 
@@ -237,8 +238,10 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
       if (!blob || !isActive()) return
       const url = URL.createObjectURL(blob)
       audioUrl.current = url
-      const element = new Audio(url)
+      const element = new Audio()
       element.preload = 'metadata'
+      element.setAttribute('playsinline', '')
+      element.src = url
       element.addEventListener('timeupdate', () => {
         const options = playbackOptions.current
         const loopRange = playbackLoopRange.current
@@ -538,6 +541,7 @@ export function useReviewController(project: AppProject, take: AppTake): ReviewC
       loopPlayback,
       export: exportState,
       play() {
+        prepareBrowserAudioPlayback()
         const range = playbackLoopRange.current
         if (
           audio.current &&

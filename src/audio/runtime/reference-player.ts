@@ -6,8 +6,8 @@ import type {
   StartPlaybackOptions,
   TimelineAnchor,
   WakeLockAdapter,
-  WakeLockHandle,
 } from './types'
+import { ManagedWakeLock } from './managed-wake-lock'
 
 type SnapshotListener = (snapshot: ReferencePlayerSnapshot) => void
 
@@ -42,8 +42,7 @@ export class ReferencePlayer {
   private readonly context: AudioContext
   private readonly gain: GainNode
   private readonly slowPlaybackProbe: SlowPlaybackProbe | undefined
-  private readonly wakeLockAdapter: WakeLockAdapter | undefined
-  private wakeLock: WakeLockHandle | null = null
+  private readonly wakeLock: ManagedWakeLock
   private anchor: TimelineAnchor | null = null
   private countdownEndsAt: number | null = null
   private pendingAudibleStartSeconds: number | null = null
@@ -72,15 +71,16 @@ export class ReferencePlayer {
   constructor(dependencies: ReferencePlayerDependencies) {
     this.context = dependencies.context
     this.element = dependencies.element
-    this.wakeLockAdapter = dependencies.wakeLock
+    this.wakeLock = new ManagedWakeLock(dependencies.wakeLock)
     this.slowPlaybackProbe = dependencies.slowPlaybackProbe
 
+    this.element.preload = 'metadata'
+    this.element.setAttribute('playsinline', '')
+    // Same-origin and Blob media do not need CORS. Setting crossOrigin after a Blob
+    // URL is assigned can make WebKit restart (or reject) an otherwise local load.
     const source = this.context.createMediaElementSource(this.element)
     this.gain = this.context.createGain()
     source.connect(this.gain).connect(this.context.destination)
-    this.element.preload = 'metadata'
-    this.element.setAttribute('playsinline', '')
-    this.element.crossOrigin = 'anonymous'
     this.bindMediaEvents()
   }
 
@@ -140,12 +140,15 @@ export class ReferencePlayer {
     this.gain.gain.setValueAtTime(0, this.context.currentTime)
     this.element.playbackRate = rate
     this.element.currentTime = loopStartSeconds
+    // Keep very short sources alive while the countdown is muted. Native looping
+    // preserves the initial user-gesture play() instead of replaying from an event.
+    this.element.loop = true
     this.pendingAudibleStartSeconds = loopStartSeconds
 
     // These calls intentionally happen before the first await so iOS sees the user activation.
     const resumePromise = this.context.resume()
     const playPromise = this.element.play()
-    const wakeLockPromise = this.wakeLockAdapter?.request()
+    const wakeLockPromise = this.wakeLock.request()
 
     try {
       await Promise.all([resumePromise, playPromise])
@@ -156,9 +159,7 @@ export class ReferencePlayer {
       ) {
         throw new DOMException('Playback activation was cancelled.', 'AbortError')
       }
-      if (wakeLockPromise) {
-        this.wakeLock = await wakeLockPromise.catch(() => null)
-      }
+      await wakeLockPromise
       if (activationGeneration !== this.activationGeneration) {
         throw new DOMException('Playback activation was cancelled.', 'AbortError')
       }
@@ -203,6 +204,7 @@ export class ReferencePlayer {
 
     const projectTime = this.pendingAudibleStartSeconds ?? finiteSeconds(projectTimeSeconds)
     if (!this.audibleSeekPending) {
+      this.element.loop = false
       const mediaTimeBeforeRewind = this.element.currentTime
       const loopDuration = Math.max(0, this.loopEndSeconds - this.loopStartSeconds)
       const toleranceSeconds = Math.min(0.2, Math.max(0.04, loopDuration * 0.02))
@@ -304,6 +306,7 @@ export class ReferencePlayer {
     this.audibleSeekPending = false
     this.audibleSeekSettled = false
     this.ignoreNextEndedAfterRewind = false
+    this.element.loop = false
     this.element.pause()
     this.anchorAt(projectTime, false)
     this.patch({
@@ -318,8 +321,7 @@ export class ReferencePlayer {
     this.pause()
     for (const cleanup of this.cleanupCallbacks.splice(0)) cleanup()
     this.listeners.clear()
-    if (this.wakeLock && !this.wakeLock.released) await this.wakeLock.release()
-    this.wakeLock = null
+    await this.wakeLock.release()
   }
 
   private supportsPitchPreservation(): boolean {
@@ -559,6 +561,7 @@ export class ReferencePlayer {
     this.audibleSeekPending = false
     this.audibleSeekSettled = false
     this.ignoreNextEndedAfterRewind = false
+    this.element.loop = false
     this.anchorAt(projectTime, false)
     this.mute()
     this.patch({ phase: 'retry', failure, message, countdownRemainingSeconds: 0 })

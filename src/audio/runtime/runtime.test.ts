@@ -92,10 +92,12 @@ describe('ReferencePlayer', () => {
     expect(play).toHaveBeenCalledOnce()
     await activation
     expect(player.getSnapshot().phase).toBe('countdown')
+    expect(element.loop).toBe(true)
 
     context.currentTime = 13
     expect(player.updateCountdown()).toBe(0)
     expect(player.beginAudible(5)).toBe(true)
+    expect(element.loop).toBe(false)
     context.currentTime = 14
     expect(player.currentProjectTime()).toBeCloseTo(6)
   })
@@ -314,18 +316,21 @@ describe('ReferencePlayer', () => {
     })
   })
 
-  it('re-primes a short reference that reaches its end during countdown', async () => {
-    const { element, player, play } = createPlayerFixture()
+  it('keeps a short reference natively looping and muted through countdown', async () => {
+    const { context, element, player, play } = createPlayerFixture()
     await player.activateFromGesture({
       loopStartSeconds: 0,
       loopEndSeconds: 1,
       countdownSeconds: 3,
     })
-    element.currentTime = 1
-    element.dispatchEvent(new Event('ended'))
+    expect(element.loop).toBe(true)
     expect(player.getSnapshot()).toMatchObject({ phase: 'countdown', failure: null })
-    expect(element.currentTime).toBe(0)
-    expect(play).toHaveBeenCalledTimes(2)
+    expect(play).toHaveBeenCalledOnce()
+
+    context.currentTime = 13
+    expect(player.updateCountdown()).toBe(0)
+    expect(player.beginAudible(0)).toBe(true)
+    expect(element.loop).toBe(false)
   })
 
   it('ignores a queued countdown end delivered after the audible rewind', async () => {

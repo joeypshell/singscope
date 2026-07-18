@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
+  beginBrowserAudioCapture,
+  createGeneratedPcmAudioBuffer,
   ForegroundRecorder,
   PcmCapturePipeline,
+  prepareBrowserAudioPlayback,
   ReferencePlayer,
+  renderMelodyReferenceInWorker,
+  SynthesizedReferencePlayer,
   createBrowserWakeLockAdapter,
   pitchCandidateGapReason,
   requestMicrophone,
@@ -11,10 +16,13 @@ import {
   stopMediaStream,
   type CaptureProfile,
   type CaptureSettings,
+  type AudioCaptureSession,
   type PlaybackFailure,
   type PlaybackRate,
+  type ReferencePlayback,
   type RecordingInterruption,
 } from '../audio/runtime'
+import { melodyReferenceDurationSeconds } from '../audio/dsp'
 import { frequencyToMidi, midiNoteName } from '../domain'
 import { DETECTOR_VERSION } from '../domain/versions'
 import { getDatabase, RecordingAssetWriter, type InterruptionReason } from '../persistence'
@@ -43,8 +51,9 @@ interface ControllerState {
 
 interface ActiveRuntime {
   readonly context: AudioContext
-  readonly element: HTMLAudioElement
-  readonly player: ReferencePlayer
+  readonly element: HTMLAudioElement | null
+  readonly player: ReferencePlayback
+  audioCaptureSession: AudioCaptureSession | null
   stream: MediaStream | null
   pipeline: PcmCapturePipeline | null
   recorder: ForegroundRecorder | null
@@ -54,6 +63,42 @@ interface ActiveRuntime {
   recordingStartSeconds: number
   recordingStartContextTime: number | null
   attemptId: number
+}
+
+interface PreparedSynthesizedReference {
+  readonly context: AudioContext
+  readonly buffer: AudioBuffer
+}
+
+function usesSynthesizedReference(project: AppProject): boolean {
+  return (
+    !project.isSyntheticDemo &&
+    project.targetMode === 'manual' &&
+    project.referenceAssetId === null &&
+    project.notes.length > 0
+  )
+}
+
+function releaseAudioCapture(active: ActiveRuntime): void {
+  active.audioCaptureSession?.release()
+  active.audioCaptureSession = null
+}
+
+function fallbackProjectTime(active: ActiveRuntime): number {
+  if (active.element && Number.isFinite(active.element.currentTime)) {
+    return active.element.currentTime
+  }
+  return active.player.currentProjectTime() ?? 0
+}
+
+function stopStreamAndRefreshAudioRoute(stream: MediaStream): void {
+  try {
+    stopMediaStream(stream)
+  } finally {
+    // A late getUserMedia resolution can change WebKit's native route even after
+    // its owner was cancelled. Reapply playback or the surviving capture owner.
+    prepareBrowserAudioPlayback()
+  }
 }
 
 function interruptionForWriter(reason: RecordingInterruption | null): InterruptionReason {
@@ -121,6 +166,7 @@ export function usePracticeController(
   })
   const runtime = useRef<ActiveRuntime | null>(null)
   const mediaUrl = useRef<{ url: string; revoke: () => void } | null>(null)
+  const synthesizedReference = useRef<PreparedSynthesizedReference | null>(null)
   const points = useRef<AppPitchPoint[]>([])
   const animationFrame = useRef<number | null>(null)
   const loopEnd = useRef(project.referenceDurationSeconds)
@@ -135,63 +181,145 @@ export function usePracticeController(
   >(() => undefined)
   const saved = useRef(false)
   const mounted = useRef(true)
+  const projectForReferenceLoading = useRef(project)
+  projectForReferenceLoading.current = project
 
   useEffect(() => {
+    const loadingProject = projectForReferenceLoading.current
     mounted.current = true
-    void referenceAudioUrl(project)
-      .then((result) => {
-        if (!mounted.current) {
-          result.revoke()
-          return
-        }
-        mediaUrl.current = result
-        setState((current) => ({ ...current, phase: 'ready', failureMessage: null }))
-      })
-      .catch((error: unknown) => {
+    let cancelled = false
+    let preparingContext: AudioContext | null = null
+    const loadingFailed = (error: unknown) => {
+      if (!cancelled) {
         setState((current) => ({
           ...current,
           phase: 'retry',
           failureMessage:
             error instanceof Error ? error.message : 'Backing audio could not be loaded.',
         }))
+      }
+    }
+
+    if (usesSynthesizedReference(loadingProject)) {
+      const context = new AudioContext({ latencyHint: 'interactive' })
+      preparingContext = context
+      const timelineDurationSeconds = Math.max(
+        loadingProject.referenceDurationSeconds,
+        melodyReferenceDurationSeconds(loadingProject.notes, loadingProject.alignmentSeconds),
+      )
+      void renderMelodyReferenceInWorker({
+        notes: loadingProject.notes,
+        transpositionSemitones: loadingProject.transpositionSemitones,
+        alignmentSeconds: loadingProject.alignmentSeconds,
+        timelineDurationSeconds,
       })
+        .then((bytes) => {
+          const buffer = createGeneratedPcmAudioBuffer(context, bytes)
+          if (cancelled) {
+            void context.close()
+            return
+          }
+          synthesizedReference.current = { context, buffer }
+          setState((current) => ({ ...current, phase: 'ready', failureMessage: null }))
+        })
+        .catch(loadingFailed)
+    } else {
+      void referenceAudioUrl(loadingProject)
+        .then((result) => {
+          if (cancelled) {
+            result.revoke()
+            return
+          }
+          mediaUrl.current = result
+          setState((current) => ({ ...current, phase: 'ready', failureMessage: null }))
+        })
+        .catch(loadingFailed)
+    }
+
     return () => {
+      cancelled = true
+      attemptGeneration.current += 1
+      playbackAborted.current = true
       mounted.current = false
       if (animationFrame.current !== null) cancelAnimationFrame(animationFrame.current)
       mediaUrl.current?.revoke()
       mediaUrl.current = null
+      const prepared = synthesizedReference.current
+      synthesizedReference.current = null
       const active = runtime.current
       if (active?.recorder?.getSnapshot().phase === 'recording')
         void active.recorder.interrupt('page-unloaded')
       active?.pipeline?.dispose()
-      if (active?.stream) stopMediaStream(active.stream)
+      if (active) active.pipeline = null
+      const activeStream = active?.stream ?? null
+      if (active) active.stream = null
+      if (activeStream) stopStreamAndRefreshAudioRoute(activeStream)
       if (active) {
+        releaseAudioCapture(active)
         void active.player.dispose()
         void active.context.close()
+      }
+      if (prepared && prepared.context !== active?.context) void prepared.context.close()
+      if (
+        preparingContext &&
+        preparingContext !== active?.context &&
+        preparingContext !== prepared?.context
+      ) {
+        void preparingContext.close()
       }
       runtime.current = null
       recorderStarting.current = null
       const pending = pendingMicrophone.current
       pendingMicrophone.current = null
-      void pending?.then(({ stream }) => stopMediaStream(stream)).catch(() => undefined)
+      void pending
+        ?.then(({ stream }) => stopStreamAndRefreshAudioRoute(stream))
+        .catch(() => undefined)
     }
-  }, [project])
+  }, [
+    project.alignmentSeconds,
+    project.id,
+    project.isSyntheticDemo,
+    project.referenceAssetId,
+    project.referenceDurationSeconds,
+    project.targetMode,
+    project.targetRevision,
+    project.transpositionSemitones,
+  ])
 
   const ensureRuntime = useCallback((): ActiveRuntime => {
     if (runtime.current) return runtime.current
-    if (!mediaUrl.current) throw new Error('Reference audio is still loading. Tap to retry.')
-    const context = new AudioContext({ latencyHint: 'interactive' })
-    const element = new Audio(mediaUrl.current.url)
-    element.loop = false
-    const player = new ReferencePlayer({
-      context,
-      element,
-      wakeLock: createBrowserWakeLockAdapter(navigator),
-    })
+    const synthesized = usesSynthesizedReference(project)
+    const prepared = synthesizedReference.current
+    if (synthesized && !prepared) {
+      throw new Error('The local melody guide is still loading. Tap to retry.')
+    }
+    if (!synthesized && !mediaUrl.current) {
+      throw new Error('Reference audio is still loading. Tap to retry.')
+    }
+    const context = prepared?.context ?? new AudioContext({ latencyHint: 'interactive' })
+    let element: HTMLAudioElement | null = null
+    let player: ReferencePlayback
+    if (synthesized && prepared) {
+      player = new SynthesizedReferencePlayer({
+        context,
+        buffer: prepared.buffer,
+        wakeLock: createBrowserWakeLockAdapter(navigator),
+      })
+    } else {
+      element = new Audio()
+      element.loop = false
+      player = new ReferencePlayer({
+        context,
+        element,
+        wakeLock: createBrowserWakeLockAdapter(navigator),
+      })
+      element.src = mediaUrl.current?.url ?? ''
+    }
     const value: ActiveRuntime = {
       context,
       element,
       player,
+      audioCaptureSession: null,
       stream: null,
       pipeline: null,
       recorder: null,
@@ -234,7 +362,7 @@ export function usePracticeController(
     })
     runtime.current = value
     return value
-  }, [])
+  }, [project])
 
   const finishTake = useCallback(
     async (partialReason: string | null) => {
@@ -242,15 +370,20 @@ export function usePracticeController(
       finalizing.current = Promise.resolve()
         .then(() => {
           const active = runtime.current
-          if (!active || saved.current || active.assetId === null) return
+          if (!active) return
+          if (saved.current || active.assetId === null) {
+            releaseAudioCapture(active)
+            return
+          }
           saved.current = true
           setState((current) => ({ ...current, phase: 'finalizing' }))
           active.pipeline?.dispose()
           active.pipeline = null
           if (active.stream) {
-            stopMediaStream(active.stream)
+            stopStreamAndRefreshAudioRoute(active.stream)
             active.stream = null
           }
+          releaseAudioCapture(active)
           const endingSeconds = active.player.currentProjectTime() ?? loopEnd.current
           active.player.pause()
           const timelineDurationSeconds = Math.max(
@@ -305,7 +438,9 @@ export function usePracticeController(
     }
     const pending = pendingMicrophone.current
     pendingMicrophone.current = null
-    void pending?.then(({ stream }) => stopMediaStream(stream)).catch(() => undefined)
+    void pending
+      ?.then(({ stream }) => stopStreamAndRefreshAudioRoute(stream))
+      .catch(() => undefined)
     const active = runtime.current
     const failedRecorder = active?.recorder ?? null
     if (failedRecorder?.getSnapshot().phase === 'recording') {
@@ -324,11 +459,12 @@ export function usePracticeController(
       active?.pipeline?.dispose()
       if (active) active.pipeline = null
       if (active?.stream) {
-        stopMediaStream(active.stream)
+        stopStreamAndRefreshAudioRoute(active.stream)
         active.stream = null
       }
       failedRecorder?.dispose()
       if (active?.recorder === failedRecorder) active.recorder = null
+      if (active) releaseAudioCapture(active)
       const failedWriter = active?.writer ?? null
       if (active?.writer === failedWriter) active.writer = null
       void failedWriter?.abort().catch(() => undefined)
@@ -352,8 +488,9 @@ export function usePracticeController(
     active.player.pause()
     active.pipeline?.dispose()
     active.pipeline = null
-    if (active.stream) stopMediaStream(active.stream)
+    if (active.stream) stopStreamAndRefreshAudioRoute(active.stream)
     active.stream = null
+    releaseAudioCapture(active)
     active.recorder?.dispose()
     active.recorder = null
     // ForegroundRecorder owns aborting its sink for native and start failures.
@@ -459,9 +596,10 @@ export function usePracticeController(
         active.pipeline?.dispose()
         active.pipeline = null
         if (active.stream) {
-          stopMediaStream(active.stream)
+          stopStreamAndRefreshAudioRoute(active.stream)
           active.stream = null
         }
+        releaseAudioCapture(active)
         void active.writer?.abort().catch(() => undefined)
         setState((current) => ({
           ...current,
@@ -479,7 +617,7 @@ export function usePracticeController(
         if (mock) {
           const destination = active.context.createMediaStreamDestination()
           if (!isCurrentAttempt()) {
-            stopMediaStream(destination.stream)
+            stopStreamAndRefreshAudioRoute(destination.stream)
             return
           }
           mockDestination = destination
@@ -491,85 +629,98 @@ export function usePracticeController(
         const { stream, settings, inputs } = await microphonePromise
         if (pendingMicrophone.current === microphonePromise) pendingMicrophone.current = null
         if (!isCurrentAttempt()) {
-          stopMediaStream(stream)
+          stopStreamAndRefreshAudioRoute(stream)
           return
         }
-        const source = active.context.createMediaStreamSource(stream)
-        const pipeline = await PcmCapturePipeline.create(active.context, source, {
-          onLevel: (rms, peak) => {
-            if (!captureStarted || active.recorder?.isPausedForBuffering() || !isCurrentAttempt()) {
-              return
-            }
-            setState((current) => ({ ...current, level: Math.max(rms * 5, peak) }))
-          },
-          onGap: (contextTimeSeconds) => {
-            if (
-              !captureStarted ||
-              active.recordingStartContextTime === null ||
-              contextTimeSeconds < active.recordingStartContextTime ||
-              active.recorder?.isPausedForBuffering() ||
-              !isCurrentAttempt()
-            ) {
-              return
-            }
-            const timeSeconds = active.player.currentProjectTime(contextTimeSeconds)
-            points.current.push({
-              timeSeconds:
-                timeSeconds ??
-                (Number.isFinite(active.element.currentTime) ? active.element.currentTime : 0),
-              contextTimeSeconds,
-              candidateHz: null,
-              frequencyHz: null,
-              midiNote: null,
-              confidence: null,
-              rms: 0,
-              peak: 0,
-              gapReason: timeSeconds === null ? 'timeline-gap' : 'queue-overflow',
-              detectorVersion: DETECTOR_VERSION,
-            })
-          },
-          onPitchCandidate: (candidate) => {
-            if (
-              !captureStarted ||
-              active.recordingStartContextTime === null ||
-              candidate.contextTimeSeconds < active.recordingStartContextTime ||
-              active.recorder?.isPausedForBuffering() ||
-              !isCurrentAttempt()
-            ) {
-              return
-            }
-            const timeSeconds = active.player.currentProjectTime(candidate.contextTimeSeconds)
-            const frequencyHz =
-              timeSeconds !== null && candidate.scorable && !candidate.analysisGap
-                ? candidate.frequencyHz
-                : null
-            points.current.push({
-              timeSeconds:
-                timeSeconds ??
-                (Number.isFinite(active.element.currentTime) ? active.element.currentTime : 0),
-              contextTimeSeconds: candidate.contextTimeSeconds,
-              candidateHz: candidate.frequencyHz,
-              frequencyHz,
-              midiNote: frequencyHz === null ? null : frequencyToMidi(frequencyHz),
-              confidence: candidate.confidence,
-              rms: candidate.rms,
-              peak: candidate.peak,
-              gapReason: pitchCandidateGapReason(
-                candidate,
-                timeSeconds !== null,
-                frequencyHz !== null,
-              ),
-              detectorVersion: DETECTOR_VERSION,
-            })
-          },
-        })
+        // getUserMedia can replace Safari's native route; restore the mixed route
+        // before connecting capture and making the reference audible.
+        active.audioCaptureSession?.reassert()
+        // Own the stream before the first AudioWorklet await so project changes or
+        // unmount cleanup can always stop it.
+        active.stream = stream
+        let pipeline: PcmCapturePipeline
+        try {
+          const source = active.context.createMediaStreamSource(stream)
+          pipeline = await PcmCapturePipeline.create(active.context, source, {
+            onLevel: (rms, peak) => {
+              if (
+                !captureStarted ||
+                active.recorder?.isPausedForBuffering() ||
+                !isCurrentAttempt()
+              ) {
+                return
+              }
+              setState((current) => ({ ...current, level: Math.max(rms * 5, peak) }))
+            },
+            onGap: (contextTimeSeconds) => {
+              if (
+                !captureStarted ||
+                active.recordingStartContextTime === null ||
+                contextTimeSeconds < active.recordingStartContextTime ||
+                active.recorder?.isPausedForBuffering() ||
+                !isCurrentAttempt()
+              ) {
+                return
+              }
+              const timeSeconds = active.player.currentProjectTime(contextTimeSeconds)
+              points.current.push({
+                timeSeconds: timeSeconds ?? fallbackProjectTime(active),
+                contextTimeSeconds,
+                candidateHz: null,
+                frequencyHz: null,
+                midiNote: null,
+                confidence: null,
+                rms: 0,
+                peak: 0,
+                gapReason: timeSeconds === null ? 'timeline-gap' : 'queue-overflow',
+                detectorVersion: DETECTOR_VERSION,
+              })
+            },
+            onPitchCandidate: (candidate) => {
+              if (
+                !captureStarted ||
+                active.recordingStartContextTime === null ||
+                candidate.contextTimeSeconds < active.recordingStartContextTime ||
+                active.recorder?.isPausedForBuffering() ||
+                !isCurrentAttempt()
+              ) {
+                return
+              }
+              const timeSeconds = active.player.currentProjectTime(candidate.contextTimeSeconds)
+              const frequencyHz =
+                timeSeconds !== null && candidate.scorable && !candidate.analysisGap
+                  ? candidate.frequencyHz
+                  : null
+              points.current.push({
+                timeSeconds: timeSeconds ?? fallbackProjectTime(active),
+                contextTimeSeconds: candidate.contextTimeSeconds,
+                candidateHz: candidate.frequencyHz,
+                frequencyHz,
+                midiNote: frequencyHz === null ? null : frequencyToMidi(frequencyHz),
+                confidence: candidate.confidence,
+                rms: candidate.rms,
+                peak: candidate.peak,
+                gapReason: pitchCandidateGapReason(
+                  candidate,
+                  timeSeconds !== null,
+                  frequencyHz !== null,
+                ),
+                detectorVersion: DETECTOR_VERSION,
+              })
+            },
+          })
+        } catch (error) {
+          if (active.stream === stream) active.stream = null
+          stopStreamAndRefreshAudioRoute(stream)
+          throw error
+        }
         if (!isCurrentAttempt()) {
           pipeline.dispose()
-          stopMediaStream(stream)
+          if (active.stream === stream) active.stream = null
+          stopStreamAndRefreshAudioRoute(stream)
           return
         }
         active.pipeline = pipeline
-        active.stream = stream
         setState((current) => ({
           ...current,
           microphoneInputs: inputs,
@@ -579,7 +730,9 @@ export function usePracticeController(
         captureReady = await prepareRecorder(active, stream, settings, attemptId)
         if (!captureReady) {
           pipeline.dispose()
-          stopMediaStream(stream)
+          if (active.pipeline === pipeline) active.pipeline = null
+          if (active.stream === stream) active.stream = null
+          stopStreamAndRefreshAudioRoute(stream)
         }
       }
 
@@ -645,9 +798,7 @@ export function usePracticeController(
 
         if (active.player.reanchorIfDrifted()) {
           points.current.push({
-            timeSeconds: Number.isFinite(active.element.currentTime)
-              ? active.element.currentTime
-              : state.currentSeconds,
+            timeSeconds: active.element ? fallbackProjectTime(active) : state.currentSeconds,
             contextTimeSeconds: active.context.currentTime,
             candidateHz: null,
             frequencyHz: null,
@@ -695,25 +846,51 @@ export function usePracticeController(
 
   const start = useCallback(
     (loopStartSeconds: number, loopEndSeconds: number, guideToneEnabled = false) => {
+      let startingActive: ActiveRuntime | null = null
+      let startingAttemptId: number | null = null
+      let startingMicrophone: ReturnType<typeof requestMicrophone> | null = null
+      let startingActivation: Promise<void> | null = null
+      const abortStartingAttempt = () => {
+        const active = startingActive
+        const attemptId = startingAttemptId
+        if (!active || attemptId === null || attemptGeneration.current !== attemptId) return
+        playbackAborted.current = true
+        attemptGeneration.current += 1
+        active.player.pause()
+        const microphone = startingMicrophone
+        if (pendingMicrophone.current === microphone) pendingMicrophone.current = null
+        void microphone
+          ?.then(({ stream }) => stopStreamAndRefreshAudioRoute(stream))
+          .catch(() => undefined)
+        void startingActivation?.catch(() => undefined)
+        releaseAudioCapture(active)
+      }
+
       try {
         saved.current = false
         playbackAborted.current = false
         points.current = []
         loopEnd.current = loopEndSeconds
         const active = ensureRuntime()
+        startingActive = active
         const existingRecorderPhase = active.recorder?.getSnapshot().phase
         if (existingRecorderPhase === 'recording' || existingRecorderPhase === 'finalizing') {
           setState((current) => ({ ...current, phase: 'finalizing' }))
           return
         }
         const attemptId = ++attemptGeneration.current
+        startingAttemptId = attemptId
         active.recordingStartContextTime = null
+        releaseAudioCapture(active)
+        if (project.isSyntheticDemo) prepareBrowserAudioPlayback()
+        else active.audioCaptureSession = beginBrowserAudioCapture()
         const microphonePromise = project.isSyntheticDemo
           ? null
           : requestMicrophone({
               profile: state.captureProfile,
               ...(state.selectedMicrophoneId ? { deviceId: state.selectedMicrophoneId } : {}),
             })
+        startingMicrophone = microphonePromise
         pendingMicrophone.current = microphonePromise
         // This call intentionally starts synchronously inside the click handler.
         const activation = active.player.activateFromGesture({
@@ -722,6 +899,7 @@ export function usePracticeController(
           countdownSeconds: 3,
           playbackRate: state.playbackRate,
         })
+        startingActivation = activation
         if (guideToneEnabled) {
           const guideNote = project.notes.find(
             (note) => loopStartSeconds <= note.endSeconds + project.alignmentSeconds,
@@ -733,8 +911,8 @@ export function usePracticeController(
             oscillator.frequency.value =
               440 * 2 ** ((guideNote.midiNote + project.transpositionSemitones - 69) / 12)
             gain.gain.setValueAtTime(0, now)
-            gain.gain.linearRampToValueAtTime(0.12, now + 0.025)
-            gain.gain.setValueAtTime(0.12, now + 0.3)
+            gain.gain.linearRampToValueAtTime(0.18, now + 0.025)
+            gain.gain.setValueAtTime(0.18, now + 0.3)
             gain.gain.linearRampToValueAtTime(0, now + 0.4)
             oscillator.connect(gain).connect(active.context.destination)
             oscillator.start(now)
@@ -752,6 +930,7 @@ export function usePracticeController(
           .then(() => startClock(active, microphonePromise, loopStartSeconds, attemptId))
           .catch((error: unknown) => {
             if (attemptGeneration.current !== attemptId) return
+            abortStartingAttempt()
             if (error instanceof DOMException && error.name === 'AbortError') return
             setState((current) => ({
               ...current,
@@ -760,6 +939,7 @@ export function usePracticeController(
             }))
           })
       } catch (error) {
+        abortStartingAttempt()
         setState((current) => ({
           ...current,
           phase: 'retry',
@@ -789,7 +969,9 @@ export function usePracticeController(
     }
     const pending = pendingMicrophone.current
     pendingMicrophone.current = null
-    void pending?.then(({ stream }) => stopMediaStream(stream)).catch(() => undefined)
+    void pending
+      ?.then(({ stream }) => stopStreamAndRefreshAudioRoute(stream))
+      .catch(() => undefined)
     const active = runtime.current
     if (!active) return
     active.player.pause()
@@ -803,7 +985,7 @@ export function usePracticeController(
       active.pipeline = null
       active.recorder?.dispose()
       active.recorder = null
-      if (active.stream) stopMediaStream(active.stream)
+      if (active.stream) stopStreamAndRefreshAudioRoute(active.stream)
       active.stream = null
       await active.writer?.abort().catch(() => undefined)
       active.writer = null
@@ -811,6 +993,7 @@ export function usePracticeController(
       recorderStarting.current = null
       setState((current) => ({ ...current, phase: 'idle' }))
     }
+    releaseAudioCapture(active)
   }, [finishTake])
 
   const pause = useCallback(() => {

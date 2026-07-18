@@ -54,6 +54,7 @@ describe('manual melody reference WAV', () => {
     expect(view.getUint16(34, true)).toBe(16)
     expect(view.getUint32(40, true)).toBe(expectedSamples * 2)
     expect(buffer.byteLength).toBe(44 + expectedSamples * 2)
+    expect(Math.max(...pcm(buffer))).toBeGreaterThan(12_000)
     expect([...pcm(buffer).slice(-100)]).toEqual(Array.from({ length: 100 }, () => 0))
   })
 
