@@ -13,6 +13,11 @@ import {
   type AssetRecord,
   type BinaryStore,
 } from '../persistence'
+import { melodyReferenceDurationSeconds } from '../audio/dsp'
+import {
+  renderMelodyReferenceInWorker,
+  type MelodyReferenceRenderer,
+} from '../audio/runtime/melody-reference-renderer'
 import { appProjectSchema } from './project-schema'
 import type { AppProject } from './types'
 
@@ -140,8 +145,36 @@ export async function storeBinary(
   }
 }
 
+export async function referenceAudioBlob(
+  project: AppProject,
+  renderReference: MelodyReferenceRenderer = renderMelodyReferenceInWorker,
+): Promise<Blob | null> {
+  if (project.isSyntheticDemo) {
+    const response = await fetch(
+      new URL(`${import.meta.env.BASE_URL}demo-reference.wav`, window.location.origin),
+    )
+    return response.blob()
+  }
+  if (!project.referenceAssetId && project.targetMode === 'manual' && project.notes.length > 0) {
+    const timelineDurationSeconds = Math.max(
+      project.referenceDurationSeconds,
+      melodyReferenceDurationSeconds(project.notes, project.alignmentSeconds),
+    )
+    const bytes = await renderReference({
+      notes: project.notes,
+      transpositionSemitones: project.transpositionSemitones,
+      alignmentSeconds: project.alignmentSeconds,
+      timelineDurationSeconds,
+    })
+    return new Blob([bytes], { type: 'audio/wav' })
+  }
+  if (!project.referenceAssetId) return null
+  return (await getBinaryStore()).read(project.referenceAssetId)
+}
+
 export async function referenceAudioUrl(
   project: AppProject,
+  renderReference: MelodyReferenceRenderer = renderMelodyReferenceInWorker,
 ): Promise<{ url: string; revoke: () => void }> {
   if (project.isSyntheticDemo) {
     return {
@@ -149,8 +182,8 @@ export async function referenceAudioUrl(
       revoke: () => undefined,
     }
   }
-  if (!project.referenceAssetId) throw new Error('This project has no backing audio.')
-  const blob = await (await getBinaryStore()).read(project.referenceAssetId)
+  const blob = await referenceAudioBlob(project, renderReference)
+  if (!blob && !project.referenceAssetId) throw new Error('This project has no backing audio.')
   if (!blob) throw new Error('The backing audio is missing from local storage. Restore a backup.')
   const url = URL.createObjectURL(blob)
   return { url, revoke: () => URL.revokeObjectURL(url) }

@@ -1,5 +1,11 @@
 import { z } from 'zod'
 
+import {
+  isMelodyReferencePitchSupported,
+  melodyReferenceDurationSeconds,
+  MELODY_REFERENCE_MAX_DURATION_SECONDS,
+} from '../audio/dsp'
+
 const id = z.uuid()
 const finite = z.number()
 const time = finite.nonnegative().max(7_200)
@@ -138,5 +144,53 @@ export const appProjectSchema = z
         path: ['takes'],
         message: 'A project can contain at most 500,000 pitch points.',
       })
+    }
+    if (
+      project.targetMode === 'manual' &&
+      project.referenceAssetId === null &&
+      !project.isSyntheticDemo
+    ) {
+      const addReferenceIssue = (path: PropertyKey[], message: string) =>
+        context.addIssue({ code: 'custom', path, message })
+      if (project.notes.length === 0) {
+        addReferenceIssue(['notes'], 'A synthesized Manual reference requires at least one note.')
+        return
+      }
+      const durationSeconds = melodyReferenceDurationSeconds(
+        project.notes,
+        project.alignmentSeconds,
+      )
+      if (durationSeconds <= 0) {
+        addReferenceIssue(
+          ['alignmentSeconds'],
+          'Alignment places the entire synthesized reference before the project starts.',
+        )
+      } else if (durationSeconds > MELODY_REFERENCE_MAX_DURATION_SECONDS) {
+        addReferenceIssue(
+          ['referenceDurationSeconds'],
+          'A synthesized Manual reference cannot exceed 20 minutes.',
+        )
+      } else if (Math.abs(project.referenceDurationSeconds - durationSeconds) > 0.001) {
+        addReferenceIssue(
+          ['referenceDurationSeconds'],
+          'The synthesized reference duration must match its aligned notes.',
+        )
+      }
+      if (project.referenceMimeType !== 'audio/wav') {
+        addReferenceIssue(
+          ['referenceMimeType'],
+          'A synthesized Manual reference must use the audio/wav media type.',
+        )
+      }
+      if (
+        project.notes.some(
+          (note) => !isMelodyReferencePitchSupported(note.midiNote, project.transpositionSemitones),
+        )
+      ) {
+        addReferenceIssue(
+          ['notes'],
+          'A synthesized Manual reference supports pitches from 80 to 1,200 Hz.',
+        )
+      }
     }
   })

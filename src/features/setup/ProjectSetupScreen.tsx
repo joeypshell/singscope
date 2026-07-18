@@ -146,7 +146,11 @@ export function ProjectSetupScreen({
             />
           </label>
           <label className="ss-field">
-            <span>Backing audio (64 MiB / 20 minutes maximum)</span>
+            <span>
+              Backing audio
+              {model.targetMode === 'manual' ? ' (optional for Manual)' : ''} · 64 MiB / 20 minutes
+              maximum
+            </span>
             <input
               className="ss-file-input"
               type="file"
@@ -158,7 +162,20 @@ export function ProjectSetupScreen({
               }}
             />
           </label>
-          <SelectedFile label="Reference" name={model.referenceName} />
+          <SelectedFile
+            label="Practice reference"
+            name={
+              model.referenceName ??
+              (model.targetMode === 'manual' ? 'Entered melody · synthesized locally' : null)
+            }
+          />
+          {model.targetMode === 'manual' && model.referenceName === null ? (
+            <p className="ss-help">
+              No upload is needed. SingScope will use the notes you enter below as a simple local
+              instrument guide during practice. The guide supports the same 80–1,200 Hz range as
+              live pitch detection.
+            </p>
+          ) : null}
         </section>
 
         <section className="ss-card ss-stack" aria-labelledby="target-heading">
