@@ -1,4 +1,4 @@
-export type BrowserAudioSessionType = 'playback' | 'play-and-record'
+export type BrowserAudioSessionType = 'auto' | 'playback' | 'play-and-record'
 
 interface BrowserAudioSession {
   type: string
@@ -45,6 +45,17 @@ function applyType(
 }
 
 /**
+ * WebKit can leave the native route in its lower-fidelity capture state after
+ * the microphone stops. Applying playback before returning control to auto
+ * gives Safari an explicit route transition while keeping either assignment
+ * failure contained for experimental implementations.
+ */
+function resetAfterCapture(session: BrowserAudioSession | undefined): void {
+  applyType(session, 'playback')
+  applyType(session, 'auto')
+}
+
+/**
  * Selects Safari's media-playback route. If microphone capture is still active,
  * keep the shared session in play-and-record so a preview cannot disrupt it.
  */
@@ -87,7 +98,8 @@ export function beginBrowserAudioCapture(
       const owners = captureOwners.get(session)
       owners?.delete(token)
       if (owners?.size === 0) captureOwners.delete(session)
-      applyType(session, (owners?.size ?? 0) > 0 ? 'play-and-record' : 'playback')
+      if ((owners?.size ?? 0) > 0) applyType(session, 'play-and-record')
+      else resetAfterCapture(session)
     },
   }
 }

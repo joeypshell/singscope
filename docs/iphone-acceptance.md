@@ -23,6 +23,7 @@ Record device model, iOS build, app commit SHA, audio route, available storage a
 ## Practice and performance
 
 - [ ] Complete a five-minute take and repeated-loop/separate-take run without losing audio/pitch chunks.
+- [ ] A/B **Best vocal quality** and **iPhone speaker mode** with the same sustained phrase. Confirm the applied settings are shown, note any WebKit guide degradation separately from the saved microphone recording, and use wired/USB-C headphones for the acceptance result.
 - [ ] Verify countdown, guide tone, loop boundaries, seek/re-anchor, MIDI alignment, manual latency offset, and 1× playback.
 - [ ] Use a reference shorter than the three-second countdown; confirm it is re-primed and all notes are audible after countdown. Trigger a brief buffer pause and confirm it recovers without a false retry; confirm a persistent stall finalizes a recoverable partial take.
 - [ ] Enable slower rates only if `preservesPitch` works without choppy output on this device/route.
@@ -35,6 +36,7 @@ Record device model, iOS build, app commit SHA, audio route, available storage a
 - [ ] In **Check what SingScope heard**, play the exact uploaded/recorded source and compare audible note changes with the accepted contour and editable note blocks across low, middle, and high supported pitches.
 - [ ] Open **Report a missed-note bug** and confirm recording, analysis, opening the panel, and editing its optional fields cause no report upload. Read the warning and verify it clearly says **Send bug report** uploads the exact analyzed audio and diagnostics to private cloud storage.
 - [ ] With the report service configured, tap **Send bug report** once, confirm the UI shows its preparing/sending states and a success receipt with an opaque report ID, and verify the received private object matches the locally declared byte length and SHA-256. Confirm no public object URL or client read/list access is available.
+- [ ] Finish a Practice take, open Review, expand **Report recording problem**, and repeat the explicit-send/no-background-send checks. Confirm the package contains the exact stored take plus its raw candidates, gaps, applied capture settings, and bounded queue/chunk counters.
 - [ ] Time the delivery-ticket proof on the physical iPhone in Safari and Home Screen mode; confirm it remains cancellable, does not freeze animation or VoiceOver, and completes before the two-minute ticket expires.
 - [ ] Deny connectivity and exercise server rejection, timeout, and retry. Confirm the app never reports success without a valid receipt, never sends later in the background, keeps the project intact, and offers **Save debug package** only after local ZIP preparation succeeded.
 - [ ] Verify the submitted report omits project title, original filename, microphone name/ID, lyrics, unrelated projects, and local storage identifiers, while retaining the exact source audio and expected raw detector evidence. Verify the deployment records a 30-day default expiry; test the privileged cleanup separately from the phone flow before claiming that retention is enforced.

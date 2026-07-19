@@ -6,6 +6,7 @@ import {
   createAnalyzedTargetDraftInput,
   decideMonophonicAnalysisStrategy,
   DEFAULT_CANDIDATE_SEGMENTATION_OPTIONS,
+  DEFAULT_YIN_CONFIG,
   isMelodyReferencePitchSupported,
   melodyReferenceDurationSeconds,
   MELODY_REFERENCE_MAX_DURATION_SECONDS,
@@ -21,7 +22,7 @@ import {
   type RecordedSourceResult,
   type RecordedSourceSnapshot,
 } from './audio/runtime'
-import { centsBetweenMidi, findOverlappingNoteIds } from './domain'
+import { centsBetweenMidi, DETECTOR_VERSION, findOverlappingNoteIds } from './domain'
 import {
   DashboardScreen,
   OnboardingScreen,
@@ -57,11 +58,13 @@ import type {
   AnalysisDebugRouteCategory,
   AnalysisDebugView,
   AppProject,
+  AppTake,
   AppTargetNote,
   AppTargetPitchPoint,
 } from './app/types'
 import { currentPitchLabel, usePracticeController } from './app/use-practice-controller'
 import { useReviewController } from './app/use-review-controller'
+import { useAnalysisDebugReporter } from './app/use-analysis-debug-reporter'
 import {
   inspectedPoint,
   metricDisplays,
@@ -72,6 +75,7 @@ import {
 } from './app/view-models'
 import {
   debugAudioExtensionForMimeType,
+  createPracticeTakeAnalysisDebugEvidence,
   discardPreparedExport,
   ExportPreparer,
   materializePreparedExport,
@@ -116,6 +120,60 @@ function packageSizeLabel(byteLength: number): string {
   const mebibytes = byteLength / (1024 * 1024)
   if (mebibytes >= 1) return `${mebibytes.toFixed(1)} MiB`
   return `${Math.max(1, Math.ceil(byteLength / 1024)).toString()} KiB`
+}
+
+const RECORDING_INTERRUPTION_REASONS = new Set<RecordingInterruption>([
+  'app-backgrounded',
+  'page-hidden',
+  'page-unloaded',
+  'audio-context-interrupted',
+  'microphone-ended',
+  'route-lost',
+  'reference-stalled',
+  'reference-ended',
+  'size-limit',
+  'duration-limit',
+])
+
+function recognizedRecordingInterruption(value: string | null): RecordingInterruption | null {
+  return value !== null && RECORDING_INTERRUPTION_REASONS.has(value as RecordingInterruption)
+    ? (value as RecordingInterruption)
+    : null
+}
+
+function takeRuntimeDescription(take: AppTake): string | null {
+  const diagnostics = take.captureDiagnostics
+  if (!diagnostics) return null
+  const fields = [
+    `profile=${diagnostics.captureProfile}`,
+    diagnostics.settings?.sampleRate
+      ? `input=${diagnostics.settings.sampleRate.toString()}Hz`
+      : null,
+    diagnostics.playbackContextSampleRate
+      ? `context=${diagnostics.playbackContextSampleRate.toString()}Hz`
+      : null,
+    `chunks=${diagnostics.recorderChunkCount.toString()}`,
+    `chunk-bytes=${(diagnostics.recorderSmallestChunkBytes ?? 0).toString()}..${(
+      diagnostics.recorderLargestChunkBytes ?? 0
+    ).toString()}`,
+    `pcm=${diagnostics.pcmProcessedBatches.toString()}/${diagnostics.pcmSubmittedBatches.toString()}`,
+    `dropped=${diagnostics.pcmDroppedBatches.toString()}`,
+    `abandoned=${diagnostics.pcmAbandonedBatches.toString()}`,
+    `queue-high=${diagnostics.pcmQueueHighWater.toString()}`,
+    `drain-timeout=${diagnostics.pcmDrainTimedOut ? 'yes' : 'no'}`,
+  ].filter((field): field is string => field !== null)
+  return `Automatic runtime diagnostics: ${fields.join(', ')}.`
+}
+
+function takeDebugDescription(take: AppTake, userDescription: string): string | null {
+  const runtimeDescription = takeRuntimeDescription(take)
+  const cleanedUserDescription = userDescription.trim()
+  if (!runtimeDescription) return cleanedUserDescription.slice(0, 500) || null
+  const userBudget = Math.max(0, 500 - runtimeDescription.length - 1)
+  const retainedUserDescription = cleanedUserDescription.slice(0, userBudget)
+  return retainedUserDescription
+    ? `${runtimeDescription} ${retainedUserDescription}`
+    : runtimeDescription.slice(0, 500)
 }
 
 function asMessage(error: unknown): string {
@@ -1767,33 +1825,59 @@ function PracticeRoute() {
     promptBackup: boolean
   } | null>(null)
   const [pendingRepeat, setPendingRepeat] = useState(false)
+  const practiceRouteMounted = useRef(false)
+  const practiceProjectId = useRef(project?.id ?? null)
+  const practiceNavigationAllowed = useRef(true)
+  useEffect(() => {
+    practiceRouteMounted.current = true
+    practiceProjectId.current = project?.id ?? null
+    practiceNavigationAllowed.current = true
+    return () => {
+      practiceRouteMounted.current = false
+      practiceNavigationAllowed.current = false
+    }
+  }, [project?.id])
   const onTakeSaved = useCallback(
-    (take: Parameters<typeof addTake>[1]) => {
+    async (take: Parameters<typeof addTake>[1], navigateAfterSave: boolean) => {
       if (!project) return
-      void addTake(project.id, take)
-        .then(() => {
-          const plan = repeatPlan.current
-          if (plan && plan.remaining > 1 && take.partialReason === null) {
-            repeatPlan.current = { ...plan, remaining: plan.remaining - 1 }
-            setMessage(
-              `Take ${plan.total - plan.remaining + 1} of ${plan.total} is saved locally. The next separate take will begin after its countdown.`,
-            )
-            setPendingRepeat(true)
-            return
-          }
+      const savedProjectId = project.id
+      try {
+        await addTake(savedProjectId, take)
+        const routeStillOwnsTake =
+          practiceRouteMounted.current &&
+          practiceNavigationAllowed.current &&
+          practiceProjectId.current === savedProjectId
+        if (!navigateAfterSave || !routeStillOwnsTake) {
           repeatPlan.current = null
-          setPendingRepeat(false)
-          if (
-            take.partialReason === null &&
-            (plan?.promptBackup === true || project.takes.length === 0)
-          ) {
-            setMessage(
-              'Your first take is saved locally. Return to Projects and choose Back up now so iOS storage pressure or app removal cannot erase your only copy.',
-            )
+          if (routeStillOwnsTake) {
+            setPendingRepeat(false)
+            setMessage('The take was saved locally. Open the project to review it.')
           }
-          return navigate(`/review/${project.id}/${take.id}`)
-        })
-        .catch((error: unknown) => setMessage(asMessage(error)))
+          return
+        }
+        const plan = repeatPlan.current
+        if (plan && plan.remaining > 1 && take.partialReason === null) {
+          repeatPlan.current = { ...plan, remaining: plan.remaining - 1 }
+          setMessage(
+            `Take ${plan.total - plan.remaining + 1} of ${plan.total} is saved locally. The next separate take will begin after its countdown.`,
+          )
+          setPendingRepeat(true)
+          return
+        }
+        repeatPlan.current = null
+        setPendingRepeat(false)
+        if (
+          take.partialReason === null &&
+          (plan?.promptBackup === true || project.takes.length === 0)
+        ) {
+          setMessage(
+            'Your first take is saved locally. Return to Projects and choose Back up now so iOS storage pressure or app removal cannot erase your only copy.',
+          )
+        }
+        await navigate(`/review/${savedProjectId}/${take.id}`)
+      } catch (error: unknown) {
+        setMessage(asMessage(error))
+      }
     },
     [addTake, navigate, project, setMessage],
   )
@@ -1862,13 +1946,15 @@ function PracticeRoute() {
       onBack={() => {
         repeatPlan.current = null
         setPendingRepeat(false)
-        void controller.stop().finally(() => navigate('/'))
+        practiceNavigationAllowed.current = false
+        void controller.stop({ navigateAfterSave: false }).finally(() => navigate('/'))
       }}
       onStart={() => {
         if (storageState !== 'ready' && storageState !== 'limited') {
           setMessage('Recording is disabled until the IndexedDB storage probe succeeds.')
           return
         }
+        practiceNavigationAllowed.current = true
         const existingPlan = controller.phase === 'retry' ? repeatPlan.current : null
         const repetitions = selectedLoop?.enabled ? selectedLoop.repetitions : 1
         const plan = existingPlan ?? {
@@ -1924,6 +2010,88 @@ function ReviewRoute() {
   const updateTimingOffset = useAppStore((state) => state.updateTimingOffset)
   const setMessage = useAppStore((state) => state.setMessage)
   const take = project?.takes.find((candidate) => candidate.id === takeId) ?? null
+  const buildTakeAnalysisDebugInput = useCallback(
+    async (view: AnalysisDebugView): Promise<AnalysisDebugPackageInput> => {
+      if (!take?.audioAssetId) {
+        throw new Error('This take has no microphone recording to report.')
+      }
+      const storedAudio = await (await getBinaryStore()).read(take.audioAssetId)
+      if (!storedAudio) throw new Error('The local recording bytes are missing from this device.')
+      if (storedAudio.size === 0) {
+        throw new Error('This take contains no audio bytes, so it cannot be sent as a report.')
+      }
+      const mediaType = storedAudio.type.length > 0 ? storedAudio.type : (take.audioMimeType ?? '')
+      const extension = debugAudioExtensionForMimeType(mediaType)
+      if (!extension) {
+        throw new Error(
+          'This recording format cannot be placed in a safe debug package. Save the recording from Export instead.',
+        )
+      }
+      const audio =
+        storedAudio.type.length > 0 ? storedAudio : new Blob([storedAudio], { type: mediaType })
+      const detectorVersion = take.points[0]?.detectorVersion ?? DETECTOR_VERSION
+      if (detectorVersion !== DETECTOR_VERSION) {
+        throw new Error(
+          'This take was analyzed by an older detector whose exact settings are unavailable. Record a new take before sending a report.',
+        )
+      }
+      const segmentationConfig: CandidateSegmentationOptions = Object.freeze({
+        ...DEFAULT_CANDIDATE_SEGMENTATION_OPTIONS,
+        confidenceThreshold: DEFAULT_YIN_CONFIG.confidenceThreshold,
+        analysisHopSeconds: DEFAULT_YIN_CONFIG.hopDurationSeconds,
+        analysisFrameSeconds: DEFAULT_YIN_CONFIG.frameDurationSeconds,
+      })
+      const evidence = createPracticeTakeAnalysisDebugEvidence(take, {
+        detectorVersion,
+        detectorConfig: DEFAULT_YIN_CONFIG,
+        segmentationConfig,
+      })
+      const diagnostics = take.captureDiagnostics
+      const description = takeDebugDescription(take, view.issueDescription)
+      const appAssetFileName = document.querySelector<HTMLScriptElement>(
+        'script[type="module"][src]',
+      )?.src
+      return {
+        audio: { blob: audio, extension },
+        analysis: evidence.analysis,
+        detectorConfig: evidence.detectorConfig,
+        segmentationConfig: evidence.segmentationConfig,
+        captureMetadata: {
+          recorderDurationSeconds: take.durationSeconds,
+          decodedDurationSeconds: null,
+          decodedSampleRateHz: null,
+          decodedChannelCount: null,
+          settings: diagnostics?.settings
+            ? {
+                deviceId: null,
+                label: null,
+                ...diagnostics.settings,
+              }
+            : null,
+          partialReason: recognizedRecordingInterruption(take.partialReason),
+          routeCategory: view.routeCategory,
+        },
+        browserMetadata: {
+          userAgent: navigator.userAgent,
+          viewportWidthCssPixels: window.innerWidth,
+          viewportHeightCssPixels: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio,
+          displayMode: analysisDebugDisplayMode(),
+          appAssetFileName: appAssetFileName ?? null,
+        },
+        userReport: {
+          expectedNoteCount: view.expectedNoteCount,
+          description,
+        },
+      }
+    },
+    [take],
+  )
+  const takeDebugReporter = useAnalysisDebugReporter({
+    context: 'practice-take',
+    identity: take?.id ?? 'missing-take',
+    buildInput: buildTakeAnalysisDebugInput,
+  })
   const controller = useReviewController(
     project ?? createDemoProject(),
     take ??
@@ -1971,6 +2139,7 @@ function ReviewRoute() {
         pitchMode: controller.pitchMode,
         zoomLevel: controller.zoomLevel,
         loopPlayback: controller.loopPlayback,
+        analysisDebug: take.audioAssetId ? takeDebugReporter.view : undefined,
       }}
       onBack={() => navigate(`/practice/${project.id}`)}
       onPlay={controller.play}
@@ -1992,6 +2161,11 @@ function ReviewRoute() {
       onZoomOut={controller.zoomOut}
       onLoopPlaybackChange={controller.setLoopPlayback}
       onSaveRecording={() => controller.downloadIndividual('recording')}
+      onAnalysisDebugExpectedNoteCountChange={takeDebugReporter.setExpectedNoteCount}
+      onAnalysisDebugIssueDescriptionChange={takeDebugReporter.setIssueDescription}
+      onAnalysisDebugRouteCategoryChange={takeDebugReporter.setRouteCategory}
+      onSendAnalysisDebug={takeDebugReporter.send}
+      onSaveAnalysisDebugPackage={takeDebugReporter.savePackage}
       onSavePitchCsv={() => controller.downloadIndividual('pitchCsv')}
       onSaveTargetCsv={() => controller.downloadIndividual('targetCsv')}
       onSaveChartPng={() => controller.downloadIndividual('chartPng')}

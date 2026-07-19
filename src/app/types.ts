@@ -24,9 +24,9 @@ export interface AppTargetPitchPoint {
 
 export type AnalysisDebugPhase = 'idle' | 'preparing' | 'uploading' | 'complete' | 'error'
 
-export type AnalysisDebugContext = 'analysis-result' | 'decode-failure'
+export type AnalysisDebugContext = 'analysis-result' | 'decode-failure' | 'practice-take'
 
-export type AnalysisDebugRouteCategory = 'built-in' | 'wired' | 'bluetooth' | 'unknown'
+export type AnalysisDebugRouteCategory = 'built-in' | 'wired' | 'bluetooth' | 'speaker' | 'unknown'
 
 export interface AnalysisDebugView {
   readonly context: AnalysisDebugContext
@@ -64,6 +64,29 @@ export interface AppPitchPoint {
   readonly detectorVersion: string
 }
 
+export interface AppTakeCaptureSettings {
+  readonly sampleRate: number | null
+  readonly channelCount: number | null
+  readonly echoCancellation: boolean | null
+  readonly noiseSuppression: boolean | null
+  readonly autoGainControl: boolean | null
+}
+
+export interface AppTakeCaptureDiagnostics {
+  readonly captureProfile: 'raw' | 'echo-reduced'
+  readonly settings: AppTakeCaptureSettings | null
+  readonly playbackContextSampleRate: number | null
+  readonly recorderChunkCount: number
+  readonly recorderSmallestChunkBytes: number | null
+  readonly recorderLargestChunkBytes: number | null
+  readonly pcmSubmittedBatches: number
+  readonly pcmProcessedBatches: number
+  readonly pcmDroppedBatches: number
+  readonly pcmQueueHighWater: number
+  readonly pcmAbandonedBatches: number
+  readonly pcmDrainTimedOut: boolean
+}
+
 export interface AppTake {
   readonly id: string
   readonly createdAt: string
@@ -75,6 +98,8 @@ export interface AppTake {
   readonly audioMimeType: string | null
   readonly partialReason: string | null
   readonly points: readonly AppPitchPoint[]
+  /** Missing only on takes saved before practice diagnostics were introduced. */
+  readonly captureDiagnostics?: AppTakeCaptureDiagnostics | null | undefined
 }
 
 export interface AppProject {

@@ -53,6 +53,7 @@ interface ActiveRuntime {
   readonly context: AudioContext
   readonly element: HTMLAudioElement | null
   readonly player: ReferencePlayback
+  readonly referenceMediaUrl: { readonly url: string; readonly revoke: () => void } | null
   audioCaptureSession: AudioCaptureSession | null
   stream: MediaStream | null
   pipeline: PcmCapturePipeline | null
@@ -62,12 +63,21 @@ interface ActiveRuntime {
   recordingMimeType: string | null
   recordingStartSeconds: number
   recordingStartContextTime: number | null
+  recordingStopProjectSeconds: number | null
+  lastValidContextSeconds: number | null
+  lastValidProjectSeconds: number | null
+  playbackRate: PlaybackRate
+  captureProfile: CaptureProfile
+  captureSettings: CaptureSettings | null
+  recorderChunkCount: number
+  recorderSmallestChunkBytes: number | null
+  recorderLargestChunkBytes: number | null
   attemptId: number
+  allowPostSaveNavigation: boolean
 }
 
 interface PreparedSynthesizedReference {
-  readonly context: AudioContext
-  readonly buffer: AudioBuffer
+  readonly bytes: ArrayBuffer
 }
 
 function usesSynthesizedReference(project: AppProject): boolean {
@@ -84,11 +94,39 @@ function releaseAudioCapture(active: ActiveRuntime): void {
   active.audioCaptureSession = null
 }
 
-function fallbackProjectTime(active: ActiveRuntime): number {
+function rememberProjectTime(
+  active: ActiveRuntime,
+  projectTimeSeconds: number,
+  contextTimeSeconds: number,
+): void {
+  if (!Number.isFinite(projectTimeSeconds) || !Number.isFinite(contextTimeSeconds)) return
+  active.lastValidProjectSeconds = Math.max(0, projectTimeSeconds)
+  active.lastValidContextSeconds = Math.max(0, contextTimeSeconds)
+}
+
+function fallbackProjectTime(
+  active: ActiveRuntime,
+  contextTimeSeconds = active.context.currentTime,
+): number {
+  const mapped = active.player.currentProjectTime(contextTimeSeconds)
+  if (mapped !== null) {
+    rememberProjectTime(active, mapped, contextTimeSeconds)
+    return mapped
+  }
+  if (active.lastValidContextSeconds !== null && active.lastValidProjectSeconds !== null) {
+    const projected = Math.max(
+      0,
+      active.lastValidProjectSeconds +
+        (contextTimeSeconds - active.lastValidContextSeconds) * active.playbackRate,
+    )
+    return active.recordingStopProjectSeconds === null
+      ? projected
+      : Math.min(projected, active.recordingStopProjectSeconds)
+  }
   if (active.element && Number.isFinite(active.element.currentTime)) {
     return active.element.currentTime
   }
-  return active.player.currentProjectTime() ?? 0
+  return active.recordingStartSeconds
 }
 
 function stopStreamAndRefreshAudioRoute(stream: MediaStream): void {
@@ -136,7 +174,7 @@ export interface PracticeController extends ControllerState {
     guideToneEnabled?: boolean,
   ) => void
   readonly pause: () => void
-  readonly stop: () => Promise<void>
+  readonly stop: (options?: { readonly navigateAfterSave?: boolean }) => Promise<void>
   readonly seek: (seconds: number) => void
   readonly setPlaybackRate: (rate: PlaybackRate) => void
   readonly setSelectedMicrophoneId: (deviceId: string) => void
@@ -145,7 +183,7 @@ export interface PracticeController extends ControllerState {
 
 export function usePracticeController(
   project: AppProject,
-  onTakeSaved: (take: AppTake) => void,
+  onTakeSaved: (take: AppTake, navigateAfterSave: boolean) => Promise<void>,
 ): PracticeController {
   const [state, setState] = useState<ControllerState>({
     phase: 'idle',
@@ -162,7 +200,7 @@ export function usePracticeController(
     selectedMicrophoneId: null,
     supportedPlaybackRates: [1],
     playbackRate: 1,
-    captureProfile: 'echo-reduced',
+    captureProfile: 'raw',
   })
   const runtime = useRef<ActiveRuntime | null>(null)
   const mediaUrl = useRef<{ url: string; revoke: () => void } | null>(null)
@@ -174,6 +212,7 @@ export function usePracticeController(
   const recorderStarting = useRef<Promise<void> | null>(null)
   const pendingMicrophone = useRef<ReturnType<typeof requestMicrophone> | null>(null)
   const playbackAborted = useRef(false)
+  const playbackFailureFinalizing = useRef(false)
   const attemptGeneration = useRef(0)
   const playbackFailureHandler = useRef<(failure: PlaybackFailure | null) => void>(() => undefined)
   const recordingFailureHandler = useRef<
@@ -188,7 +227,6 @@ export function usePracticeController(
     const loadingProject = projectForReferenceLoading.current
     mounted.current = true
     let cancelled = false
-    let preparingContext: AudioContext | null = null
     const loadingFailed = (error: unknown) => {
       if (!cancelled) {
         setState((current) => ({
@@ -201,8 +239,6 @@ export function usePracticeController(
     }
 
     if (usesSynthesizedReference(loadingProject)) {
-      const context = new AudioContext({ latencyHint: 'interactive' })
-      preparingContext = context
       const timelineDurationSeconds = Math.max(
         loadingProject.referenceDurationSeconds,
         melodyReferenceDurationSeconds(loadingProject.notes, loadingProject.alignmentSeconds),
@@ -214,12 +250,8 @@ export function usePracticeController(
         timelineDurationSeconds,
       })
         .then((bytes) => {
-          const buffer = createGeneratedPcmAudioBuffer(context, bytes)
-          if (cancelled) {
-            void context.close()
-            return
-          }
-          synthesizedReference.current = { context, buffer }
+          if (cancelled) return
+          synthesizedReference.current = { bytes }
           setState((current) => ({ ...current, phase: 'ready', failureMessage: null }))
         })
         .catch(loadingFailed)
@@ -238,36 +270,55 @@ export function usePracticeController(
 
     return () => {
       cancelled = true
-      attemptGeneration.current += 1
-      playbackAborted.current = true
       mounted.current = false
-      if (animationFrame.current !== null) cancelAnimationFrame(animationFrame.current)
-      mediaUrl.current?.revoke()
+      if (animationFrame.current !== null) {
+        cancelAnimationFrame(animationFrame.current)
+        animationFrame.current = null
+      }
+      const detachedMediaUrl = mediaUrl.current
       mediaUrl.current = null
-      const prepared = synthesizedReference.current
       synthesizedReference.current = null
       const active = runtime.current
-      if (active?.recorder?.getSnapshot().phase === 'recording')
-        void active.recorder.interrupt('page-unloaded')
-      active?.pipeline?.dispose()
-      if (active) active.pipeline = null
-      const activeStream = active?.stream ?? null
-      if (active) active.stream = null
-      if (activeStream) stopStreamAndRefreshAudioRoute(activeStream)
-      if (active) {
+      const recorderPhase = active?.recorder?.getSnapshot().phase ?? null
+      const preservesFinalization =
+        active !== null &&
+        (recorderPhase === 'recording' ||
+          recorderPhase === 'finalizing' ||
+          finalizing.current !== null)
+      if (preservesFinalization) active.allowPostSaveNavigation = false
+      if (!preservesFinalization) {
+        attemptGeneration.current += 1
+        playbackAborted.current = true
+      }
+      const disposeUncommittedActive = () => {
+        if (!active || runtime.current !== active) return
+        runtime.current = null
+        active.pipeline?.dispose()
+        active.pipeline = null
+        const activeStream = active.stream
+        active.stream = null
+        if (activeStream) stopStreamAndRefreshAudioRoute(activeStream)
         releaseAudioCapture(active)
-        void active.player.dispose()
-        void active.context.close()
+        active.recorder?.dispose()
+        active.recorder = null
+        void active.writer?.abort().catch(() => undefined)
+        active.writer = null
+        active.assetId = null
+        active.referenceMediaUrl?.revoke()
+        if (detachedMediaUrl && detachedMediaUrl !== active.referenceMediaUrl) {
+          detachedMediaUrl.revoke()
+        }
+        void active.player.dispose().catch(() => undefined)
+        void active.context.close().catch(() => undefined)
       }
-      if (prepared && prepared.context !== active?.context) void prepared.context.close()
-      if (
-        preparingContext &&
-        preparingContext !== active?.context &&
-        preparingContext !== prepared?.context
-      ) {
-        void preparingContext.close()
+      if (recorderPhase === 'recording' && active?.recorder) {
+        void active.recorder.interrupt('page-unloaded').catch(disposeUncommittedActive)
+      } else if (!preservesFinalization) {
+        disposeUncommittedActive()
+      } else if (detachedMediaUrl && detachedMediaUrl !== active.referenceMediaUrl) {
+        detachedMediaUrl.revoke()
       }
-      runtime.current = null
+      if (!active) detachedMediaUrl?.revoke()
       recorderStarting.current = null
       const pending = pendingMicrophone.current
       pendingMicrophone.current = null
@@ -296,29 +347,38 @@ export function usePracticeController(
     if (!synthesized && !mediaUrl.current) {
       throw new Error('Reference audio is still loading. Tap to retry.')
     }
-    const context = prepared?.context ?? new AudioContext({ latencyHint: 'interactive' })
+    // Start creates the capture audio session before calling this function, so
+    // Safari chooses the context's hardware format for simultaneous I/O rather
+    // than changing it underneath an already-created context.
+    const context = new AudioContext({ latencyHint: 'interactive' })
     let element: HTMLAudioElement | null = null
     let player: ReferencePlayback
-    if (synthesized && prepared) {
-      player = new SynthesizedReferencePlayer({
-        context,
-        buffer: prepared.buffer,
-        wakeLock: createBrowserWakeLockAdapter(navigator),
-      })
-    } else {
-      element = new Audio()
-      element.loop = false
-      player = new ReferencePlayer({
-        context,
-        element,
-        wakeLock: createBrowserWakeLockAdapter(navigator),
-      })
-      element.src = mediaUrl.current?.url ?? ''
+    try {
+      if (synthesized && prepared) {
+        player = new SynthesizedReferencePlayer({
+          context,
+          buffer: createGeneratedPcmAudioBuffer(context, prepared.bytes),
+          wakeLock: createBrowserWakeLockAdapter(navigator),
+        })
+      } else {
+        element = new Audio()
+        element.loop = false
+        player = new ReferencePlayer({
+          context,
+          element,
+          wakeLock: createBrowserWakeLockAdapter(navigator),
+        })
+        element.src = mediaUrl.current?.url ?? ''
+      }
+    } catch (error) {
+      void context.close().catch(() => undefined)
+      throw error
     }
     const value: ActiveRuntime = {
       context,
       element,
       player,
+      referenceMediaUrl: synthesized ? null : mediaUrl.current,
       audioCaptureSession: null,
       stream: null,
       pipeline: null,
@@ -328,13 +388,25 @@ export function usePracticeController(
       recordingMimeType: null,
       recordingStartSeconds: 0,
       recordingStartContextTime: null,
+      recordingStopProjectSeconds: null,
+      lastValidContextSeconds: null,
+      lastValidProjectSeconds: null,
+      playbackRate: 1,
+      captureProfile: 'raw',
+      captureSettings: null,
+      recorderChunkCount: 0,
+      recorderSmallestChunkBytes: null,
+      recorderLargestChunkBytes: null,
       attemptId: 0,
+      allowPostSaveNavigation: true,
     }
     player.subscribe((snapshot) => {
-      if (!mounted.current) return
+      if (snapshot.projectTimeSeconds !== null) {
+        rememberProjectTime(value, snapshot.projectTimeSeconds, value.context.currentTime)
+      }
+      if (!mounted.current || !value.allowPostSaveNavigation || runtime.current !== value) return
       if (snapshot.phase === 'retry') playbackFailureHandler.current(snapshot.failure)
-      const active = runtime.current
-      const recorder = active?.recorder ?? null
+      const recorder = value.recorder
       if (snapshot.phase === 'playing' && recorder?.getSnapshot().phase === 'recording') {
         if (snapshot.message !== null && !recorder.pauseForBuffering()) {
           playbackFailureHandler.current('media-stalled')
@@ -368,7 +440,7 @@ export function usePracticeController(
     async (partialReason: string | null) => {
       if (finalizing.current) return finalizing.current
       finalizing.current = Promise.resolve()
-        .then(() => {
+        .then(async () => {
           const active = runtime.current
           if (!active) return
           if (saved.current || active.assetId === null) {
@@ -376,15 +448,24 @@ export function usePracticeController(
             return
           }
           saved.current = true
-          setState((current) => ({ ...current, phase: 'finalizing' }))
-          active.pipeline?.dispose()
-          active.pipeline = null
+          if (mounted.current && active.allowPostSaveNavigation && runtime.current === active) {
+            setState((current) => ({ ...current, phase: 'finalizing' }))
+          }
+          const endingSeconds =
+            active.recordingStopProjectSeconds ??
+            active.player.currentProjectTime() ??
+            loopEnd.current
+          const pipeline = active.pipeline
+          const pipelineDiagnostics = pipeline
+            ? await pipeline.drain().catch(() => pipeline.getDiagnostics())
+            : null
+          pipeline?.dispose()
+          if (active.pipeline === pipeline) active.pipeline = null
           if (active.stream) {
             stopStreamAndRefreshAudioRoute(active.stream)
             active.stream = null
           }
           releaseAudioCapture(active)
-          const endingSeconds = active.player.currentProjectTime() ?? loopEnd.current
           active.player.pause()
           const timelineDurationSeconds = Math.max(
             0.02,
@@ -408,9 +489,53 @@ export function usePracticeController(
             audioMimeType: active.recordingMimeType,
             partialReason,
             points: [...points.current],
+            captureDiagnostics: {
+              captureProfile: active.captureProfile,
+              settings: active.captureSettings
+                ? {
+                    sampleRate: active.captureSettings.sampleRate,
+                    channelCount: active.captureSettings.channelCount,
+                    echoCancellation: active.captureSettings.echoCancellation,
+                    noiseSuppression: active.captureSettings.noiseSuppression,
+                    autoGainControl: active.captureSettings.autoGainControl,
+                  }
+                : null,
+              playbackContextSampleRate: Number.isFinite(active.context.sampleRate)
+                ? active.context.sampleRate
+                : null,
+              recorderChunkCount: active.recorderChunkCount,
+              recorderSmallestChunkBytes: active.recorderSmallestChunkBytes,
+              recorderLargestChunkBytes: active.recorderLargestChunkBytes,
+              pcmSubmittedBatches: pipelineDiagnostics?.submittedBatches ?? 0,
+              pcmProcessedBatches: pipelineDiagnostics?.processedBatches ?? 0,
+              pcmDroppedBatches: pipelineDiagnostics?.droppedBatches ?? 0,
+              pcmQueueHighWater: pipelineDiagnostics?.highWaterMark ?? 0,
+              pcmAbandonedBatches: pipelineDiagnostics?.abandonedBatches ?? 0,
+              pcmDrainTimedOut: pipelineDiagnostics?.drainTimedOut ?? false,
+            },
           }
-          onTakeSaved(take)
-          if (mounted.current) setState((current) => ({ ...current, phase: 'paused' }))
+          active.recorder?.dispose()
+          active.recorder = null
+          active.writer = null
+          active.assetId = null
+          active.recordingMimeType = null
+          active.recordingStartContextTime = null
+          active.recordingStopProjectSeconds = null
+          await active.player.dispose().catch(() => undefined)
+          await active.context.close().catch(() => undefined)
+          const navigateAfterSave = mounted.current && active.allowPostSaveNavigation
+          if (!navigateAfterSave) active.referenceMediaUrl?.revoke()
+          try {
+            await onTakeSaved(take, navigateAfterSave)
+          } finally {
+            if (!mounted.current || !active.allowPostSaveNavigation) {
+              active.referenceMediaUrl?.revoke()
+            }
+            if (runtime.current === active) runtime.current = null
+          }
+          if (navigateAfterSave && mounted.current && active.allowPostSaveNavigation) {
+            setState((current) => ({ ...current, phase: 'paused' }))
+          }
         })
         .finally(() => {
           finalizing.current = null
@@ -421,16 +546,22 @@ export function usePracticeController(
   )
 
   playbackFailureHandler.current = (failure) => {
-    if (playbackAborted.current) return
-    playbackAborted.current = true
-    attemptGeneration.current += 1
+    if (playbackAborted.current || playbackFailureFinalizing.current) return
+    const active = runtime.current
+    const failedRecorder = active?.recorder ?? null
+    const recorderPhase = failedRecorder?.getSnapshot().phase ?? null
+    const preserveTake = recorderPhase === 'recording' || recorderPhase === 'finalizing'
+    if (preserveTake) playbackFailureFinalizing.current = true
+    else {
+      playbackAborted.current = true
+      attemptGeneration.current += 1
+    }
     setState((current) => ({
       ...current,
-      phase: current.phase === 'recording' ? 'finalizing' : 'retry',
-      failureMessage:
-        current.phase === 'recording'
-          ? 'Reference audio paused; saving this take as a recoverable partial.'
-          : current.failureMessage,
+      phase: preserveTake ? 'finalizing' : 'retry',
+      failureMessage: preserveTake
+        ? 'Reference audio paused; saving this take as a recoverable partial.'
+        : current.failureMessage,
     }))
     if (animationFrame.current !== null) {
       cancelAnimationFrame(animationFrame.current)
@@ -441,9 +572,7 @@ export function usePracticeController(
     void pending
       ?.then(({ stream }) => stopStreamAndRefreshAudioRoute(stream))
       .catch(() => undefined)
-    const active = runtime.current
-    const failedRecorder = active?.recorder ?? null
-    if (failedRecorder?.getSnapshot().phase === 'recording') {
+    if (recorderPhase === 'recording' && failedRecorder && active) {
       void (async () => {
         const reason: RecordingInterruption =
           failure === 'context-interrupted'
@@ -453,9 +582,16 @@ export function usePracticeController(
               : failure === 'route-lost'
                 ? 'route-lost'
                 : 'reference-stalled'
-        await failedRecorder.interrupt(reason)
+        await failedRecorder.interrupt(reason).catch((error: unknown) => {
+          playbackFailureFinalizing.current = false
+          recordingFailureHandler.current(
+            active,
+            active.attemptId,
+            error instanceof Error ? error.message : 'The interrupted take could not be saved.',
+          )
+        })
       })()
-    } else {
+    } else if (!preserveTake) {
       active?.pipeline?.dispose()
       if (active) active.pipeline = null
       if (active?.stream) {
@@ -481,6 +617,7 @@ export function usePracticeController(
     }
     playbackAborted.current = true
     attemptGeneration.current += 1
+    const ownsUi = mounted.current && active.allowPostSaveNavigation && runtime.current === active
     if (animationFrame.current !== null) {
       cancelAnimationFrame(animationFrame.current)
       animationFrame.current = null
@@ -498,7 +635,12 @@ export function usePracticeController(
     active.assetId = null
     active.recordingMimeType = null
     active.recordingStartContextTime = null
-    if (mounted.current) {
+    active.recordingStopProjectSeconds = null
+    if (runtime.current === active) runtime.current = null
+    void active.player.dispose().catch(() => undefined)
+    void active.context.close().catch(() => undefined)
+    if (!active.allowPostSaveNavigation) active.referenceMediaUrl?.revoke()
+    if (ownsUi) {
       setState((current) => ({
         ...current,
         phase: 'retry',
@@ -543,6 +685,15 @@ export function usePracticeController(
         limits: { maxBytes: 48 * 1024 * 1024, maxDurationSeconds: 15 * 60 },
         sink: {
           append: async (chunk) => {
+            active.recorderChunkCount += 1
+            active.recorderSmallestChunkBytes =
+              active.recorderSmallestChunkBytes === null
+                ? chunk.size
+                : Math.min(active.recorderSmallestChunkBytes, chunk.size)
+            active.recorderLargestChunkBytes =
+              active.recorderLargestChunkBytes === null
+                ? chunk.size
+                : Math.max(active.recorderLargestChunkBytes, chunk.size)
             await writer.appendOneSecondChunk(chunk)
           },
           commit: async ({ mimeType: actualMime, partialReason }) => {
@@ -555,6 +706,26 @@ export function usePracticeController(
         },
       })
       recorder.subscribe((snapshot) => {
+        if (snapshot.phase === 'finalizing') {
+          if (animationFrame.current !== null) {
+            cancelAnimationFrame(animationFrame.current)
+            animationFrame.current = null
+          }
+          if (mounted.current && active.allowPostSaveNavigation && runtime.current === active) {
+            setState((current) => ({ ...current, phase: 'finalizing' }))
+          }
+          active.recordingStopProjectSeconds ??=
+            active.player.currentProjectTime() ?? fallbackProjectTime(active)
+          const draining = active.pipeline?.drain()
+          if (draining) {
+            void draining.then(
+              () => active.player.pause(),
+              () => active.player.pause(),
+            )
+          } else {
+            active.player.pause()
+          }
+        }
         if (snapshot.phase === 'complete') void finishTake(snapshot.partialReason)
         if (snapshot.phase === 'error') {
           recordingFailureHandler.current(
@@ -638,6 +809,7 @@ export function usePracticeController(
         // Own the stream before the first AudioWorklet await so project changes or
         // unmount cleanup can always stop it.
         active.stream = stream
+        active.captureSettings = settings
         let pipeline: PcmCapturePipeline
         try {
           const source = active.context.createMediaStreamSource(stream)
@@ -646,7 +818,10 @@ export function usePracticeController(
               if (
                 !captureStarted ||
                 active.recorder?.isPausedForBuffering() ||
-                !isCurrentAttempt()
+                !isCurrentAttempt() ||
+                !mounted.current ||
+                !active.allowPostSaveNavigation ||
+                runtime.current !== active
               ) {
                 return
               }
@@ -663,8 +838,11 @@ export function usePracticeController(
                 return
               }
               const timeSeconds = active.player.currentProjectTime(contextTimeSeconds)
+              if (timeSeconds !== null) {
+                rememberProjectTime(active, timeSeconds, contextTimeSeconds)
+              }
               points.current.push({
-                timeSeconds: timeSeconds ?? fallbackProjectTime(active),
+                timeSeconds: timeSeconds ?? fallbackProjectTime(active, contextTimeSeconds),
                 contextTimeSeconds,
                 candidateHz: null,
                 frequencyHz: null,
@@ -687,12 +865,16 @@ export function usePracticeController(
                 return
               }
               const timeSeconds = active.player.currentProjectTime(candidate.contextTimeSeconds)
+              if (timeSeconds !== null) {
+                rememberProjectTime(active, timeSeconds, candidate.contextTimeSeconds)
+              }
               const frequencyHz =
                 timeSeconds !== null && candidate.scorable && !candidate.analysisGap
                   ? candidate.frequencyHz
                   : null
               points.current.push({
-                timeSeconds: timeSeconds ?? fallbackProjectTime(active),
+                timeSeconds:
+                  timeSeconds ?? fallbackProjectTime(active, candidate.contextTimeSeconds),
                 contextTimeSeconds: candidate.contextTimeSeconds,
                 candidateHz: candidate.frequencyHz,
                 frequencyHz,
@@ -810,7 +992,11 @@ export function usePracticeController(
             detectorVersion: DETECTOR_VERSION,
           })
         }
-        const currentSeconds = active.player.currentProjectTime() ?? state.currentSeconds
+        const mappedCurrentSeconds = active.player.currentProjectTime()
+        if (mappedCurrentSeconds !== null) {
+          rememberProjectTime(active, mappedCurrentSeconds, active.context.currentTime)
+        }
+        const currentSeconds = mappedCurrentSeconds ?? state.currentSeconds
         if (mock) {
           while (
             mockIndex < mock.length &&
@@ -846,10 +1032,12 @@ export function usePracticeController(
 
   const start = useCallback(
     (loopStartSeconds: number, loopEndSeconds: number, guideToneEnabled = false) => {
+      if (finalizing.current) return
       let startingActive: ActiveRuntime | null = null
       let startingAttemptId: number | null = null
       let startingMicrophone: ReturnType<typeof requestMicrophone> | null = null
       let startingActivation: Promise<void> | null = null
+      let unownedAudioCaptureSession: AudioCaptureSession | null = null
       const abortStartingAttempt = () => {
         const active = startingActive
         const attemptId = startingAttemptId
@@ -867,23 +1055,54 @@ export function usePracticeController(
       }
 
       try {
-        saved.current = false
-        playbackAborted.current = false
-        points.current = []
-        loopEnd.current = loopEndSeconds
-        const active = ensureRuntime()
-        startingActive = active
-        const existingRecorderPhase = active.recorder?.getSnapshot().phase
-        if (existingRecorderPhase === 'recording' || existingRecorderPhase === 'finalizing') {
+        const previous = runtime.current
+        const previousRecorderPhase = previous?.recorder?.getSnapshot().phase ?? null
+        if (previousRecorderPhase === 'recording' || previousRecorderPhase === 'finalizing') {
           setState((current) => ({ ...current, phase: 'finalizing' }))
           return
         }
+        if (previous) {
+          runtime.current = null
+          previous.pipeline?.dispose()
+          previous.pipeline = null
+          if (previous.stream) stopStreamAndRefreshAudioRoute(previous.stream)
+          previous.stream = null
+          releaseAudioCapture(previous)
+          previous.recorder?.dispose()
+          previous.recorder = null
+          if (previous.writer && previousRecorderPhase !== 'complete') {
+            void previous.writer.abort().catch(() => undefined)
+          }
+          previous.writer = null
+          previous.assetId = null
+          void previous.player.dispose().catch(() => undefined)
+          void previous.context.close().catch(() => undefined)
+        }
+        saved.current = false
+        playbackAborted.current = false
+        playbackFailureFinalizing.current = false
+        points.current = []
+        loopEnd.current = loopEndSeconds
+        if (project.isSyntheticDemo) prepareBrowserAudioPlayback()
+        else unownedAudioCaptureSession = beginBrowserAudioCapture()
+        const active = ensureRuntime()
+        startingActive = active
         const attemptId = ++attemptGeneration.current
         startingAttemptId = attemptId
         active.recordingStartContextTime = null
+        active.recordingStopProjectSeconds = null
+        active.lastValidContextSeconds = null
+        active.lastValidProjectSeconds = null
+        active.playbackRate = state.playbackRate
+        active.captureProfile = state.captureProfile
+        active.captureSettings = null
+        active.recorderChunkCount = 0
+        active.recorderSmallestChunkBytes = null
+        active.recorderLargestChunkBytes = null
+        active.allowPostSaveNavigation = true
         releaseAudioCapture(active)
-        if (project.isSyntheticDemo) prepareBrowserAudioPlayback()
-        else active.audioCaptureSession = beginBrowserAudioCapture()
+        active.audioCaptureSession = unownedAudioCaptureSession
+        unownedAudioCaptureSession = null
         const microphonePromise = project.isSyntheticDemo
           ? null
           : requestMicrophone({
@@ -939,6 +1158,8 @@ export function usePracticeController(
             }))
           })
       } catch (error) {
+        unownedAudioCaptureSession?.release()
+        unownedAudioCaptureSession = null
         abortStartingAttempt()
         setState((current) => ({
           ...current,
@@ -960,27 +1181,42 @@ export function usePracticeController(
     ],
   )
 
-  const stop = useCallback(async () => {
-    attemptGeneration.current += 1
-    playbackAborted.current = true
-    if (animationFrame.current !== null) {
-      cancelAnimationFrame(animationFrame.current)
-      animationFrame.current = null
-    }
-    const pending = pendingMicrophone.current
-    pendingMicrophone.current = null
-    void pending
-      ?.then(({ stream }) => stopStreamAndRefreshAudioRoute(stream))
-      .catch(() => undefined)
-    const active = runtime.current
-    if (!active) return
-    active.player.pause()
-    if (active.recorder?.getSnapshot().phase === 'recording') {
-      await active.recorder.stop()
-      await finishTake(null)
-    } else if (active.recorder?.getSnapshot().phase === 'finalizing') {
-      await finalizing.current
-    } else {
+  const stop = useCallback(
+    async (options?: { readonly navigateAfterSave?: boolean }) => {
+      const active = runtime.current
+      if (options?.navigateAfterSave === false && active) {
+        active.allowPostSaveNavigation = false
+      }
+      if (finalizing.current) {
+        await finalizing.current
+        return
+      }
+      if (animationFrame.current !== null) {
+        cancelAnimationFrame(animationFrame.current)
+        animationFrame.current = null
+      }
+      const pending = pendingMicrophone.current
+      pendingMicrophone.current = null
+      void pending
+        ?.then(({ stream }) => stopStreamAndRefreshAudioRoute(stream))
+        .catch(() => undefined)
+      if (!active) return
+      const recorderPhase = active.recorder?.getSnapshot().phase ?? null
+      if (recorderPhase === 'recording' || recorderPhase === 'finalizing') {
+        setState((current) => ({ ...current, phase: 'finalizing' }))
+        try {
+          await active.recorder?.stop()
+          await finishTake(active.recorder?.getSnapshot().partialReason ?? null)
+        } finally {
+          attemptGeneration.current += 1
+          playbackAborted.current = true
+        }
+        return
+      }
+
+      attemptGeneration.current += 1
+      playbackAborted.current = true
+      active.player.pause()
       active.pipeline?.dispose()
       active.pipeline = null
       active.recorder?.dispose()
@@ -992,21 +1228,25 @@ export function usePracticeController(
       active.assetId = null
       recorderStarting.current = null
       setState((current) => ({ ...current, phase: 'idle' }))
-    }
-    releaseAudioCapture(active)
-  }, [finishTake])
+      releaseAudioCapture(active)
+    },
+    [finishTake],
+  )
 
   const pause = useCallback(() => {
     void stop()
   }, [stop])
 
   const seek = useCallback((seconds: number) => {
+    if (finalizing.current) return
     runtime.current?.player.seek(seconds)
     setState((current) => ({ ...current, currentSeconds: seconds }))
   }, [])
 
   const setPlaybackRate = useCallback((playbackRate: PlaybackRate) => {
-    runtime.current?.player.setPlaybackRate(playbackRate)
+    const active = runtime.current
+    active?.player.setPlaybackRate(playbackRate)
+    if (active) active.playbackRate = playbackRate
     setState((current) => ({ ...current, playbackRate }))
   }, [])
 
