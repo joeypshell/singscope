@@ -119,14 +119,28 @@ export function PracticeScreen({
           tone="danger"
           title="Practice stopped safely"
           message={model.failureMessage}
-          actionLabel="Tap to retry"
-          onAction={onStart}
+          actionLabel={model.phase === 'retry' ? 'Tap to retry' : undefined}
+          onAction={model.phase === 'retry' ? onStart : undefined}
         />
       ) : null}
 
       {model.noticeMessage ? (
         <StatusBanner tone="info" title="Playback buffering" message={model.noticeMessage} />
       ) : null}
+
+      {model.captureProfile === 'raw' ? (
+        <StatusBanner
+          tone="info"
+          title="Best vocal quality selected"
+          message="Raw capture preserves sustained notes best with wired or USB-C headphones. If the guide is playing through the iPhone speaker, open Settings and choose iPhone speaker mode to reduce guide bleed; Safari may still lower the guide's quality while the microphone is active."
+        />
+      ) : (
+        <StatusBanner
+          tone="warning"
+          title="Echo reduction can affect singing"
+          message="Use this only when the guide must play through the iPhone speaker. Safari may gate or roughen a voice that matches the guide pitch."
+        />
+      )}
 
       {!recordingAvailable ? (
         <StatusBanner
@@ -281,7 +295,7 @@ export function PracticeScreen({
                     checked={model.captureProfile === 'raw'}
                     onChange={() => onCaptureProfileChange('raw')}
                   />
-                  <span>Raw ideals (processing off where iOS allows)</span>
+                  <span>Best vocal quality · processing off where iOS allows</span>
                 </label>
                 <label className="ss-choice">
                   <input
@@ -291,7 +305,7 @@ export function PracticeScreen({
                     checked={model.captureProfile === 'echo-reduced'}
                     onChange={() => onCaptureProfileChange('echo-reduced')}
                   />
-                  <span>Echo-reduced ideals</span>
+                  <span>iPhone speaker mode · may gate or roughen singing</span>
                 </label>
               </fieldset>
               <label className="ss-choice">

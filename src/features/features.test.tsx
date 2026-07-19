@@ -290,6 +290,42 @@ describe('project setup', () => {
     expect(onSavePackage).toHaveBeenCalledOnce()
   })
 
+  it('labels an affected practice take clearly and sends only after the explicit tap', async () => {
+    const onSend = vi.fn()
+    const onRoute = vi.fn()
+    render(
+      <AnalysisDebugPanel
+        model={{
+          context: 'practice-take',
+          phase: 'idle',
+          reportingAvailable: true,
+          canSavePackage: false,
+          packageSizeLabel: null,
+          errorMessage: null,
+          reportId: null,
+          receivedAt: null,
+          expectedNoteCount: null,
+          issueDescription: '',
+          routeCategory: 'unknown',
+        }}
+        onExpectedNoteCountChange={vi.fn()}
+        onIssueDescriptionChange={vi.fn()}
+        onRouteCategoryChange={onRoute}
+        onSend={onSend}
+        onSavePackage={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Report this take' })).toBeInTheDocument()
+    expect(screen.getByText(/exact microphone recording, raw pitch candidates/)).toBeInTheDocument()
+    expect(onSend).not.toHaveBeenCalled()
+    await userEvent.selectOptions(screen.getByLabelText('Audio route'), 'speaker')
+    expect(onRoute).toHaveBeenCalledWith('speaker')
+    expect(onSend).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Send bug report' }))
+    expect(onSend).toHaveBeenCalledOnce()
+  })
+
   it('shows the validated report receipt after a direct upload', () => {
     render(
       <AnalysisDebugPanel

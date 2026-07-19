@@ -26,6 +26,30 @@ describe('browser audio-session routing', () => {
     first.release()
     expect(session.type).toBe('play-and-record')
     second.release()
+    expect(session.type).toBe('auto')
+  })
+
+  it('resets the last capture route through playback before returning to auto', () => {
+    const assignments: string[] = []
+    let type = 'auto'
+    const session = Object.defineProperty({}, 'type', {
+      configurable: true,
+      get: () => type,
+      set: (next: string) => {
+        type = next
+        assignments.push(next)
+      },
+    }) as { type: string }
+    const navigatorValue = fakeNavigator(session)
+
+    const capture = beginBrowserAudioCapture(navigatorValue)
+    capture.release()
+    expect(assignments).toEqual(['play-and-record', 'playback', 'auto'])
+    expect(session.type).toBe('auto')
+
+    expect(prepareBrowserAudioPlayback(navigatorValue)).toBe(true)
+    expect(session.type).toBe('playback')
+    capture.release()
     expect(session.type).toBe('playback')
   })
 
@@ -52,6 +76,22 @@ describe('browser audio-session routing', () => {
     expect(session.type).toBe('play-and-record')
 
     current.release()
+    expect(session.type).toBe('auto')
+  })
+
+  it('keeps playback when an experimental implementation rejects auto', () => {
+    let type = 'auto'
+    const session = Object.defineProperty({}, 'type', {
+      configurable: true,
+      get: () => type,
+      set: (next: string) => {
+        if (next === 'auto') throw new DOMException('unsupported', 'NotSupportedError')
+        type = next
+      },
+    }) as { type: string }
+
+    const capture = beginBrowserAudioCapture(fakeNavigator(session))
+    expect(() => capture.release()).not.toThrow()
     expect(session.type).toBe('playback')
   })
 

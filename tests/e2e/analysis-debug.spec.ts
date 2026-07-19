@@ -12,7 +12,7 @@ import {
 } from '@zip.js/zip.js'
 import { expect, test, type Page, type Route } from '@playwright/test'
 
-import { installDeterministicBrowserAdapters, openApp } from './helpers'
+import { installDeterministicBrowserAdapters, openApp, recordSyntheticTake } from './helpers'
 
 const REPORT_URL = '**/functions/v1/analysis-report'
 const RECEIPT = {
@@ -213,6 +213,92 @@ test('explicitly sends recorded-melody diagnostics once and includes raw evidenc
     const notesCsv = await fileEntry('estimated-notes.csv').getData(new TextWriter())
     expect(notesCsv).toContain('mean_confidence')
     expect(notesCsv.split(/\r?\n/).length).toBeGreaterThan(7)
+  } finally {
+    await reader.close()
+  }
+})
+
+test('explicitly sends a completed practice take from Review with capture diagnostics', async ({
+  page,
+}) => {
+  let uploadCount = 0
+  await page.route(REPORT_URL, async (route) => {
+    if (isTicketRequest(route)) {
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify(TICKET),
+      })
+      return
+    }
+    uploadCount += 1
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify(RECEIPT),
+    })
+  })
+
+  await recordSyntheticTake(page)
+  expect(uploadCount).toBe(0)
+
+  await page.getByText('Report recording problem', { exact: true }).click()
+  const debugPanel = page.getByRole('region', { name: 'Report this take' })
+  await expect(debugPanel).toBeVisible()
+  await debugPanel.getByLabel('Number of notes you played (optional)').fill('7')
+  await debugPanel.getByLabel('Audio route').selectOption('speaker')
+  await debugPanel
+    .getByLabel('What went wrong? (optional)')
+    .fill('The guide became grainy and the singing was not captured correctly.')
+  expect(uploadCount).toBe(0)
+
+  await debugPanel.getByRole('button', { name: 'Send bug report' }).click()
+  await expect(debugPanel.getByText('Bug report sent', { exact: true })).toBeVisible({
+    timeout: 20_000,
+  })
+  expect(uploadCount).toBe(1)
+
+  const uploads = await capturedUploads(page)
+  expect(uploads).toHaveLength(1)
+  const upload = uploads[0]
+  if (upload === undefined) throw new Error('Practice-take report upload was not seen.')
+  const reader = new ZipReader(new BlobReader(new Blob([Uint8Array.from(upload.bytes)])))
+  try {
+    const entries = await reader.getEntries()
+    const fileEntry = (name: string): FileEntry => {
+      const entry = entries.find((candidate) => candidate.filename === name)
+      if (entry === undefined || entry.directory)
+        throw new Error(`${name} is missing from the ZIP.`)
+      return entry
+    }
+    const manifest = JSON.parse(await fileEntry('manifest.json').getData(new TextWriter())) as {
+      sourceAudioPath: string
+      contourPointCount: number
+    }
+    expect(manifest.contourPointCount).toBeGreaterThan(0)
+    const sourceAudio = await fileEntry(manifest.sourceAudioPath).getData(new Uint8ArrayWriter())
+    expect(sourceAudio.byteLength).toBeGreaterThan(44)
+
+    const diagnosticsText = await fileEntry('diagnostics.json').getData(new TextWriter())
+    const diagnostics = JSON.parse(diagnosticsText) as {
+      userReport: { expectedNoteCount: number | null; description: string | null }
+      capture: {
+        routeCategory: string | null
+        recorderDurationSeconds: number | null
+      }
+      analysis: { contour: unknown[] }
+    }
+    expect(diagnostics.userReport.expectedNoteCount).toBe(7)
+    expect(diagnostics.userReport.description).toContain(
+      'The guide became grainy and the singing was not captured correctly.',
+    )
+    expect(diagnostics.userReport.description).toContain(
+      'Automatic runtime diagnostics: profile=raw',
+    )
+    expect(diagnostics.capture.routeCategory).toBe('speaker')
+    expect(diagnostics.capture.recorderDurationSeconds).toBeGreaterThan(0)
+    expect(diagnostics.analysis.contour.length).toBeGreaterThan(0)
+    expect(diagnosticsText).not.toContain('Synthetic warm-up')
   } finally {
     await reader.close()
   }

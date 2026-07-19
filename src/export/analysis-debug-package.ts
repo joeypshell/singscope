@@ -251,6 +251,9 @@ export function debugAudioExtensionForMimeType(mediaType: string): DebugAudioExt
 }
 
 function validatedAudioMediaType(audio: AnalysisDebugAudioInput): string {
+  if (audio.blob.size === 0) {
+    throw new Error('Analysis debug audio is empty.')
+  }
   if (audio.blob.size > ANALYSIS_DEBUG_LIMITS.sourceBytes) {
     throw new Error('Analysis debug audio exceeds the 8 MiB recording limit.')
   }

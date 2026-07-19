@@ -247,4 +247,15 @@ describe('local analysis debug package', () => {
       }),
     ).rejects.toThrow(/does not match/)
   })
+
+  it('rejects empty audio before preparing an upload the report service cannot accept', async () => {
+    await expect(
+      createAnalysisDebugPackage({
+        audio: { blob: new Blob([], { type: 'audio/webm' }), extension: 'webm' },
+        analysis,
+        detectorConfig: DEFAULT_YIN_CONFIG,
+        segmentationConfig,
+      }),
+    ).rejects.toThrow(/audio is empty/)
+  })
 })

@@ -4,6 +4,8 @@ import { Sheet } from '../../components/Sheet'
 import { StatusBanner } from '../../components/StatusBanner'
 import { TransportControls } from '../../components/TransportControls'
 import type { PitchChartPoint, PitchChartScene } from '../../rendering/pitch-chart'
+import type { AnalysisDebugRouteCategory, AnalysisDebugView } from '../../app/types'
+import { AnalysisDebugPanel } from '../setup/AnalysisDebugPanel'
 import { ExportPanel, type ExportView } from './ExportPanel'
 
 export interface ReviewPointView extends PitchChartPoint {
@@ -33,6 +35,7 @@ export interface ReviewView {
   readonly pitchMode: 'pitch' | 'cents'
   readonly zoomLevel: number
   readonly loopPlayback: boolean
+  readonly analysisDebug?: AnalysisDebugView | undefined
 }
 
 export interface ReviewScreenProps {
@@ -60,6 +63,12 @@ export interface ReviewScreenProps {
   readonly onSaveReportHtml?: (() => void) | undefined
   readonly onSaveManifestJson?: (() => void) | undefined
   readonly onSaveReadme?: (() => void) | undefined
+  readonly onAnalysisDebugExpectedNoteCountChange?: ((count: number | null) => void) | undefined
+  readonly onAnalysisDebugIssueDescriptionChange?: ((description: string) => void) | undefined
+  readonly onAnalysisDebugRouteCategoryChange?:
+    ((route: AnalysisDebugRouteCategory) => void) | undefined
+  readonly onSendAnalysisDebug?: (() => void) | undefined
+  readonly onSaveAnalysisDebugPackage?: (() => void) | undefined
 }
 
 export function ReviewScreen({
@@ -87,6 +96,11 @@ export function ReviewScreen({
   onSaveReportHtml,
   onSaveManifestJson,
   onSaveReadme,
+  onAnalysisDebugExpectedNoteCountChange,
+  onAnalysisDebugIssueDescriptionChange,
+  onAnalysisDebugRouteCategoryChange,
+  onSendAnalysisDebug,
+  onSaveAnalysisDebugPackage,
 }: ReviewScreenProps) {
   const visibleScene: PitchChartScene = {
     ...model.scene,
@@ -176,6 +190,24 @@ export function ReviewScreen({
           onStop={onStop}
           onSeek={onSeek}
         />
+
+        {model.analysisDebug &&
+        onAnalysisDebugExpectedNoteCountChange &&
+        onAnalysisDebugIssueDescriptionChange &&
+        onAnalysisDebugRouteCategoryChange &&
+        onSendAnalysisDebug &&
+        onSaveAnalysisDebugPackage ? (
+          <Sheet title="Report recording problem" summary="Send this take's diagnostics">
+            <AnalysisDebugPanel
+              model={model.analysisDebug}
+              onExpectedNoteCountChange={onAnalysisDebugExpectedNoteCountChange}
+              onIssueDescriptionChange={onAnalysisDebugIssueDescriptionChange}
+              onRouteCategoryChange={onAnalysisDebugRouteCategoryChange}
+              onSend={onSendAnalysisDebug}
+              onSavePackage={onSaveAnalysisDebugPackage}
+            />
+          </Sheet>
+        ) : null}
 
         <section className="ss-card ss-stack" aria-labelledby="metrics-heading">
           <div>

@@ -68,6 +68,39 @@ const targetPitchPoint = z.object({
     .optional(),
 })
 
+const takeCaptureSettings = z.object({
+  sampleRate: finite.positive().max(384_000).nullable(),
+  channelCount: z.number().int().min(1).max(64).nullable(),
+  echoCancellation: z.boolean().nullable(),
+  noiseSuppression: z.boolean().nullable(),
+  autoGainControl: z.boolean().nullable(),
+})
+
+const takeCaptureDiagnostics = z.object({
+  captureProfile: z.enum(['raw', 'echo-reduced']),
+  settings: takeCaptureSettings.nullable(),
+  playbackContextSampleRate: finite.positive().max(384_000).nullable(),
+  recorderChunkCount: z.number().int().nonnegative().max(10_000),
+  recorderSmallestChunkBytes: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(48 * 1024 * 1024)
+    .nullable(),
+  recorderLargestChunkBytes: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(48 * 1024 * 1024)
+    .nullable(),
+  pcmSubmittedBatches: z.number().int().nonnegative().max(10_000_000),
+  pcmProcessedBatches: z.number().int().nonnegative().max(10_000_000),
+  pcmDroppedBatches: z.number().int().nonnegative().max(10_000_000),
+  pcmQueueHighWater: z.number().int().nonnegative().max(1_000),
+  pcmAbandonedBatches: z.number().int().nonnegative().max(10_000_000),
+  pcmDrainTimedOut: z.boolean(),
+})
+
 const take = z
   .object({
     id,
@@ -79,6 +112,7 @@ const take = z
     audioMimeType: z.string().max(255).nullable(),
     partialReason: z.string().max(120).nullable(),
     points: z.array(pitchPoint).max(500_000),
+    captureDiagnostics: takeCaptureDiagnostics.nullable().optional(),
   })
   .transform((value) => {
     if (value.projectStartSeconds !== undefined)

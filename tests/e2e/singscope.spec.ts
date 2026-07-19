@@ -126,6 +126,69 @@ test('enabled loop repetitions are saved as separate takes', async ({ page }) =>
   expect(persistedTakeCount).toBe(2)
 })
 
+test('a foreground interruption finalizes a recoverable partial take', async ({ page }) => {
+  await openSyntheticDemo(page)
+  await page.getByRole('button', { name: 'Start' }).click()
+  await expect(
+    page.getByRole('region', { name: 'Practice transport' }).getByText('● Recording'),
+  ).toBeVisible({ timeout: 8_000 })
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'hidden',
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+
+  await expect(page).toHaveURL(/#\/review\//, { timeout: 10_000 })
+  await expect(page.getByText('Recoverable partial take', { exact: true })).toBeVisible()
+  await expect(page.getByText('page-hidden', { exact: true })).toBeVisible()
+})
+
+test('Projects saves the active take without navigating back to Review later', async ({ page }) => {
+  await openSyntheticDemo(page)
+  await page.getByRole('button', { name: 'Start' }).click()
+  await expect(
+    page.getByRole('region', { name: 'Practice transport' }).getByText('● Recording'),
+  ).toBeVisible({ timeout: 8_000 })
+
+  await page.getByRole('button', { name: 'Projects' }).click()
+  await expect(page).toHaveURL(/\/#\/$/)
+
+  await expect
+    .poll(
+      () =>
+        page.evaluate(async () => {
+          const request = indexedDB.open('singscope:app:v1')
+          const database = await new Promise<IDBDatabase>((resolve, reject) => {
+            request.onsuccess = () => resolve(request.result)
+            request.onerror = () =>
+              reject(request.error ?? new Error('IndexedDB could not be opened.'))
+          })
+          try {
+            const transaction = database.transaction('projects', 'readonly')
+            const recordsRequest = transaction.objectStore('projects').getAll()
+            const records = await new Promise<Record<string, unknown>[]>((resolve, reject) => {
+              recordsRequest.onsuccess = () =>
+                resolve(recordsRequest.result as Record<string, unknown>[])
+              recordsRequest.onerror = () =>
+                reject(recordsRequest.error ?? new Error('Projects could not be read.'))
+            })
+            const payload = records[0]?.['payload'] as { takes?: unknown[] } | undefined
+            return payload?.takes?.length ?? 0
+          } finally {
+            database.close()
+          }
+        }),
+      { timeout: 10_000 },
+    )
+    .toBe(1)
+
+  await page.waitForTimeout(500)
+  await expect(page).toHaveURL(/\/#\/$/)
+})
+
 test('backing audio and MIDI track selection create a rendered target', async ({ page }) => {
   await openApp(page)
   await page.getByRole('button', { name: 'New project' }).click()

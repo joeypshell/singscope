@@ -41,6 +41,24 @@ describe('mobile controls', () => {
     expect(onStart).toHaveBeenCalledOnce()
   })
 
+  it('locks transport and seeking while a take is finalizing', () => {
+    render(
+      <TransportControls
+        phase="finalizing"
+        currentSeconds={4}
+        durationSeconds={10}
+        onStart={vi.fn()}
+        onPause={vi.fn()}
+        onStop={vi.fn()}
+        onSeek={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Finishing…' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled()
+    expect(screen.getByLabelText('Timeline position')).toBeDisabled()
+  })
+
   it('fits the piano roll to the actual low or high notes without large-array spreads', () => {
     const low = calculateRollViewport(
       [{ id: 'low', startSeconds: 0, endSeconds: 2, midiNote: 33 }],

@@ -90,4 +90,52 @@ describe('virtual Manual reference schema', () => {
         expect.stringMatching(/80 to 1,200 Hz/),
       )
   })
+
+  it('accepts bounded practice capture diagnostics while preserving legacy takes', () => {
+    const baseTake = {
+      id: '30000000-0000-4000-8000-000000000001',
+      createdAt: '2026-07-17T00:00:01.000Z',
+      label: 'Take 1',
+      projectStartSeconds: 0,
+      durationSeconds: 1,
+      audioAssetId: '40000000-0000-4000-8000-000000000001',
+      audioMimeType: 'audio/mp4',
+      partialReason: null,
+      points: [],
+    }
+    expect(appProjectSchema.safeParse(virtualManualProject({ takes: [baseTake] })).success).toBe(
+      true,
+    )
+    expect(
+      appProjectSchema.safeParse(
+        virtualManualProject({
+          takes: [
+            {
+              ...baseTake,
+              captureDiagnostics: {
+                captureProfile: 'raw',
+                settings: {
+                  sampleRate: 48_000,
+                  channelCount: 1,
+                  echoCancellation: false,
+                  noiseSuppression: false,
+                  autoGainControl: false,
+                },
+                playbackContextSampleRate: 48_000,
+                recorderChunkCount: 2,
+                recorderSmallestChunkBytes: 2_048,
+                recorderLargestChunkBytes: 4_096,
+                pcmSubmittedBatches: 10,
+                pcmProcessedBatches: 10,
+                pcmDroppedBatches: 0,
+                pcmQueueHighWater: 2,
+                pcmAbandonedBatches: 0,
+                pcmDrainTimedOut: false,
+              },
+            },
+          ],
+        }),
+      ).success,
+    ).toBe(true)
+  })
 })

@@ -29,14 +29,25 @@ export function AnalysisDebugPanel({
 }: AnalysisDebugPanelProps) {
   const busy = model.phase === 'preparing' || model.phase === 'uploading'
   const decodeFailure = model.context === 'decode-failure'
+  const practiceTake = model.context === 'practice-take'
 
   return (
     <section className="ss-card ss-stack" aria-labelledby="analysis-debug-heading">
       <div>
         <h3 id="analysis-debug-heading">
-          {decodeFailure ? 'Report this recording failure' : 'Report a missed-note bug'}
+          {decodeFailure
+            ? 'Report this recording failure'
+            : practiceTake
+              ? 'Report this take'
+              : 'Report a missed-note bug'}
         </h3>
-        {decodeFailure ? (
+        {practiceTake ? (
+          <p>
+            One tap prepares and sends this take's exact microphone recording, raw pitch candidates,
+            gaps, browser details, and the capture settings Safari actually applied. SingScope does
+            not send anything until you tap the button below.
+          </p>
+        ) : decodeFailure ? (
           <p>
             One tap prepares and sends the exact microphone recording that this browser could not
             decode, plus the failure description, browser version, viewport, display mode, and
@@ -70,7 +81,7 @@ export function AnalysisDebugPanel({
           />
         </label>
         <label className="ss-field">
-          <span>Microphone route</span>
+          <span>{practiceTake ? 'Audio route' : 'Microphone route'}</span>
           <select
             value={model.routeCategory}
             disabled={busy}
@@ -82,6 +93,9 @@ export function AnalysisDebugPanel({
             <option value="built-in">Built-in iPhone microphone</option>
             <option value="wired">Wired / USB-C microphone</option>
             <option value="bluetooth">Bluetooth microphone</option>
+            {practiceTake ? (
+              <option value="speaker">iPhone speaker with built-in mic</option>
+            ) : null}
           </select>
         </label>
         <label className="ss-field">
