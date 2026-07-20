@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@noble/hashes": "2.2.0",
-    "@zip.js/zip.js": "2.8.28",
+    "@zip.js/zip.js": "2.8.31",
     "dexie": "4.4.4",
     "dexie-react-hooks": "4.4.0",
     "midi-json-parser-broker": "4.0.132",
