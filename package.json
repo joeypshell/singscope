@@ -48,7 +48,7 @@
     "midi-json-parser-broker": "4.0.132",
     "midi-json-parser-worker": "8.1.66",
     "react": "19.2.7",
-    "react-dom": "19.2.7",
+    "react-dom": "19.2.8",
     "react-router": "8.2.0",
     "workbox-window": "7.4.1",
     "zod": "4.4.3",
